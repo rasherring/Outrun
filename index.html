@@ -51,6 +51,37 @@
   const DRAW = 800;
   const CENTRIFUGAL = 0.3;
   const FOV = 60;
+  const HORIZON_K = 0.008;
+  const HORIZON_AHEAD = 64;
+  const HILL_FRONT = 1.35;
+  const HILL_FAR = "#2c4a5e";
+  const HILL_MID = "#6a8472";
+  const HILL_LIT = "#f2eee4";
+  const RIDGE_FAR = [
+    [0.00, 0.026], [0.025, 0.033], [0.045, 0.029], [0.065, 0.041],
+    [0.085, 0.036], [0.105, 0.052], [0.125, 0.045], [0.145, 0.061],
+    [0.165, 0.053], [0.185, 0.042], [0.210, 0.049], [0.235, 0.033],
+    [0.260, 0.040], [0.280, 0.035], [0.305, 0.055], [0.325, 0.067],
+    [0.345, 0.057], [0.365, 0.073], [0.385, 0.062], [0.405, 0.050],
+    [0.430, 0.057], [0.455, 0.038], [0.480, 0.046], [0.500, 0.041],
+    [0.525, 0.060], [0.545, 0.052], [0.570, 0.069], [0.590, 0.060],
+    [0.615, 0.047], [0.640, 0.056], [0.665, 0.036], [0.690, 0.044],
+    [0.710, 0.039], [0.735, 0.063], [0.755, 0.071], [0.775, 0.059],
+    [0.800, 0.051], [0.825, 0.058], [0.850, 0.040], [0.875, 0.049],
+    [0.900, 0.032], [0.925, 0.042], [0.950, 0.029], [0.975, 0.027]
+  ];
+  const RIDGE_MID = [
+    [0.00, 0.018], [0.03, 0.024], [0.055, 0.020], [0.08, 0.031],
+    [0.105, 0.026], [0.13, 0.039], [0.155, 0.032], [0.18, 0.045],
+    [0.205, 0.035], [0.23, 0.028], [0.26, 0.037], [0.285, 0.022],
+    [0.315, 0.030], [0.34, 0.042], [0.365, 0.034], [0.39, 0.048],
+    [0.415, 0.039], [0.44, 0.030], [0.47, 0.038], [0.495, 0.025],
+    [0.52, 0.034], [0.55, 0.046], [0.575, 0.036], [0.60, 0.027],
+    [0.63, 0.040], [0.655, 0.050], [0.68, 0.040], [0.71, 0.031],
+    [0.74, 0.026], [0.765, 0.036], [0.79, 0.044], [0.815, 0.033],
+    [0.845, 0.047], [0.87, 0.037], [0.895, 0.024], [0.925, 0.033],
+    [0.955, 0.021], [0.98, 0.019]
+  ];
 
   const camDepth = 1 / Math.tan((FOV / 2) * Math.PI / 180);
   const playerZ = CAM_H * camDepth;
@@ -101,6 +132,7 @@
   let playerX = 0;
   let wheel = 0;
   let hillGrade = 0;
+  let horizonScroll = 0;
   let viewW = 1;
   let viewH = 1;
   const held = {};
@@ -388,6 +420,7 @@
 
     position += dt * speed;
     while (position >= trackLength) position -= trackLength;
+    horizonScroll += dt * speed * horizonCurve() * HORIZON_K;
 
     if (left) playerX -= steer;
     else if (right) playerX += steer;
@@ -461,10 +494,150 @@
       maxY = seg.p2.screen.y;
     }
 
+    drawHorizon(spans.length ? maxY : viewH * HORIZON);
+
     for (let i = spans.length - 1; i >= 0; i--) drawSeg(spans[i]);
 
     drawCar();
     drawHud();
+  }
+
+  function horizonCurve() {
+    const base = findSegment(position);
+    const nSeg = segments.length;
+    let sum = 0;
+    let wsum = 0;
+    for (let i = 0; i < HORIZON_AHEAD; i++) {
+      const w = HORIZON_AHEAD - i;
+      sum += segments[(base.index + i) % nSeg].curve * w;
+      wsum += w;
+    }
+    return sum / wsum;
+  }
+
+  function ridgeScreen(pts, shift, period) {
+    const out = [];
+    const i0 = -1;
+    const i1 = Math.ceil(viewW / period) + 1;
+    for (let tile = i0; tile <= i1; tile++) {
+      const x0 = tile * period - shift;
+      for (let p = 0; p < pts.length; p++) {
+        out.push({ x: x0 + pts[p][0] * period, h: pts[p][1] });
+      }
+    }
+    return out;
+  }
+
+  function ridgeBulge(i) {
+    const k = [0.45, 0.95, 0.3, 1.1, 0.6, 0.8][i % 6];
+    return viewH * 0.0055 * k;
+  }
+
+  function ridgeSeg(prev, cur, i, base) {
+    const y0 = base - prev.h * viewH;
+    const y1 = base - cur.h * viewH;
+    return {
+      p0: { x: prev.x, y: y0 },
+      p1: { x: cur.x, y: y1 },
+      c: { x: (prev.x + cur.x) * 0.5, y: (y0 + y1) * 0.5 - ridgeBulge(i) }
+    };
+  }
+
+  function fillRidge(sp, base, color) {
+    if (sp.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(sp[0].x, base);
+    ctx.lineTo(sp[0].x, base - sp[0].h * viewH);
+    for (let i = 1; i < sp.length; i++) {
+      const seg = ridgeSeg(sp[i - 1], sp[i], i, base);
+      ctx.quadraticCurveTo(seg.c.x, seg.c.y, seg.p1.x, seg.p1.y);
+    }
+    ctx.lineTo(sp[sp.length - 1].x, base);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function lerpPt(a, b, t) {
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+  }
+
+  function splitQuad(p0, c, p1, t) {
+    const a = lerpPt(p0, c, t);
+    const b = lerpPt(c, p1, t);
+    const p = lerpPt(a, b, t);
+    return { left: [p0, a, p], right: [p, b, p1] };
+  }
+
+  function fillLit(sp, base, color) {
+    ctx.beginPath();
+    for (let i = 1; i < sp.length - 1; i++) {
+      const h = sp[i].h;
+      if (h < 0.04 || h <= sp[i - 1].h || h < sp[i + 1].h) continue;
+      if (h - sp[i + 1].h < 0.006) continue;
+      const seg = ridgeSeg(sp[i], sp[i + 1], i + 1, base);
+      const yb0 = Math.min(base, seg.p0.y + (base - seg.p0.y) * 0.34);
+      const yb1 = Math.min(base, seg.p1.y + (base - seg.p1.y) * 0.42);
+      const mx = (seg.p0.x + seg.p1.x) * 0.5;
+      const my = Math.min(base, (yb0 + yb1) * 0.5 + viewH * 0.004);
+      ctx.moveTo(seg.p0.x, seg.p0.y);
+      ctx.quadraticCurveTo(seg.c.x, seg.c.y, seg.p1.x, seg.p1.y);
+      ctx.lineTo(seg.p1.x, yb1);
+      ctx.quadraticCurveTo(mx, my, seg.p0.x, yb0);
+      ctx.closePath();
+    }
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function fillCaps(sp, base, color) {
+    ctx.beginPath();
+    for (let i = 1; i < sp.length - 1; i++) {
+      const h = sp[i].h;
+      if (h < 0.048 || h <= sp[i - 1].h || h <= sp[i + 1].h) continue;
+      const left = splitQuad(
+        ridgeSeg(sp[i - 1], sp[i], i, base).p0,
+        ridgeSeg(sp[i - 1], sp[i], i, base).c,
+        ridgeSeg(sp[i - 1], sp[i], i, base).p1,
+        0.48
+      ).right;
+      const right = splitQuad(
+        ridgeSeg(sp[i], sp[i + 1], i + 1, base).p0,
+        ridgeSeg(sp[i], sp[i + 1], i + 1, base).c,
+        ridgeSeg(sp[i], sp[i + 1], i + 1, base).p1,
+        0.52
+      ).left;
+      const drop = Math.min(viewH * 0.011, (base - left[2].y) * 0.28);
+      const yL = Math.min(base, left[0].y + drop * 0.55);
+      const yR = Math.min(base, right[2].y + drop * 0.8);
+      const yN = Math.min(base, left[2].y + drop);
+      ctx.moveTo(left[0].x, left[0].y);
+      ctx.quadraticCurveTo(left[1].x, left[1].y, left[2].x, left[2].y);
+      ctx.quadraticCurveTo(right[1].x, right[1].y, right[2].x, right[2].y);
+      ctx.lineTo(right[2].x, yR);
+      ctx.quadraticCurveTo((left[0].x + right[2].x) * 0.5, yN, left[0].x, yL);
+      ctx.closePath();
+    }
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function drawHorizon(base) {
+    const s = viewW / 1280;
+    const period = 1600 * s;
+    function wrapShift(mul) {
+      let shift = (horizonScroll * s * mul) % period;
+      if (shift < 0) shift += period;
+      return shift;
+    }
+    const far = ridgeScreen(RIDGE_FAR, wrapShift(1), period);
+    const mid = ridgeScreen(RIDGE_MID, wrapShift(HILL_FRONT), period);
+    fillRidge(far, base, HILL_FAR);
+    fillLit(far, base, HILL_LIT);
+    fillCaps(far, base, HILL_LIT);
+    fillRidge(mid, base, HILL_MID);
+    fillLit(mid, base, HILL_LIT);
+    fillCaps(mid, base, HILL_LIT);
   }
 
   function drawSky() {
@@ -490,6 +663,7 @@
     playerX = 0;
     wheel = 0;
     hillGrade = 0;
+    horizonScroll = 0;
   }
 
   function resize() {
