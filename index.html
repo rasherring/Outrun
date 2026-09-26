@@ -140,6 +140,8 @@
   let phase = "ready";
   let timeLeft = RACE_SECS;
   let countLeft = 0;
+  let nextSpriteId = 1;
+  let spriteStamp = 0;
   const held = {};
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -213,6 +215,36 @@
     closeHill();
     addRoad(50, 120, 50, 0, 0);
     trackLength = segments.length * SEG;
+    placeSprites();
+  }
+
+  function addSprite(i, kind, variant, offset) {
+    const seg = segments[i];
+    if (!seg) return;
+    if (!seg.sprites) seg.sprites = [];
+    seg.sprites.push({
+      id: nextSpriteId++,
+      kind: kind,
+      variant: variant,
+      offset: offset,
+      z: seg.p1.world.z,
+      y: seg.p1.world.y,
+      t: 0,
+      stamp: 0
+    });
+  }
+
+  function placeSprites() {
+    const n = segments.length;
+    for (let i = 18; i < n - 16; i += 14) {
+      const band = (i / 14) | 0;
+      const side = band % 2 === 0 ? 1 : -1;
+      const sign = band % 5 === 4;
+      const variant = band % 3;
+      const out = ((i * 13) % 4) * 0.08;
+      if (sign) addSprite(i, "sign", band % 2, side * (1.72 + out));
+      else addSprite(i, "tree", variant, side * ((variant === 2 ? 2.2 : 1.9) + out));
+    }
   }
 
   function findSegment(z) {
@@ -294,6 +326,143 @@
       const h1 = w1 / 36;
       const h2 = w2 / 36;
       quad(x1 - h1, y1, x1 + h1, y1, x2 + h2, y2, x2 - h2, y2, s.lane);
+    }
+  }
+
+  function projectSpriteY(worldY, cz, camY) {
+    if (cz <= 0.1) return 1e9;
+    return viewH * HORIZON - (camDepth / cz) * (worldY - camY) * viewH / 2;
+  }
+
+  function queueSprite(sp, camX, dx, camY, camZ, clipY, lineU, hidden) {
+    if (sp.stamp === spriteStamp) return null;
+    sp.stamp = spriteStamp;
+    const cz = sp.z - camZ;
+    if (!(cz > 0.25)) return null;
+    const scale = camDepth / cz;
+    const sw = scale * ROAD_W * viewW / 2;
+    const cx = -(camX - sp.t * dx);
+    const roadX = viewW / 2 + scale * cx * viewW / 2;
+    sp.roadX = roadX;
+    sp.roadW = sw;
+    sp.sx = roadX + sp.offset * sw;
+    sp.sy = projectSpriteY(sp.y, cz, camY);
+    sp.sk = sw;
+    sp.cz = cz;
+    sp.clipY = clipY;
+    sp.lineU = lineU;
+    sp.hidden = hidden;
+    return sp;
+  }
+
+  function drawRoadside(sp) {
+    if (sp.hidden) return;
+    const clipBottom = (sp.clipY < sp.lineU ? sp.clipY : sp.lineU) - 1;
+    if (!(clipBottom > 1)) return;
+    const leftKeep = sp.roadX - sp.roadW - 1;
+    const rightKeep = sp.roadX + sp.roadW + 1;
+    ctx.save();
+    ctx.beginPath();
+    if (leftKeep > 0) ctx.rect(0, 0, leftKeep < viewW ? leftKeep : viewW, clipBottom);
+    if (rightKeep < viewW) {
+      const x0 = rightKeep > 0 ? rightKeep : 0;
+      ctx.rect(x0, 0, viewW - x0, clipBottom);
+    }
+    ctx.clip();
+    ctx.translate(sp.sx, sp.sy);
+    const k = sp.sk;
+    if (sp.kind === "sign") drawSign(k, sp.variant);
+    else if (sp.variant === 1) drawConifer(k);
+    else if (sp.variant === 2) drawPalm(k);
+    else drawRoundTree(k);
+    ctx.restore();
+  }
+
+  function drawRoundTree(k) {
+    ctx.fillStyle = "#5c4030";
+    ctx.fillRect(-0.035 * k, -0.32 * k, 0.07 * k, 0.32 * k);
+    ctx.fillStyle = "#0e5530";
+    ctx.beginPath();
+    ctx.arc(0, -0.56 * k, 0.3 * k, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#1a7a3c";
+    ctx.beginPath();
+    ctx.arc(-0.06 * k, -0.66 * k, 0.16 * k, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawConifer(k) {
+    ctx.fillStyle = "#5c4030";
+    ctx.fillRect(-0.028 * k, -0.14 * k, 0.056 * k, 0.14 * k);
+    function cone(y, hw, h, color) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, y - h);
+      ctx.lineTo(-hw, y);
+      ctx.lineTo(hw, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+    cone(-0.1 * k, 0.26 * k, 0.38 * k, "#0c4e2c");
+    cone(-0.34 * k, 0.2 * k, 0.36 * k, "#146838");
+    cone(-0.56 * k, 0.13 * k, 0.32 * k, "#1c8444");
+  }
+
+  function drawPalm(k) {
+    const h = 0.7 * k;
+    ctx.fillStyle = "#6a4a32";
+    ctx.beginPath();
+    ctx.moveTo(-0.028 * k, 0);
+    ctx.lineTo(-0.01 * k, -h);
+    ctx.lineTo(0.02 * k, -h);
+    ctx.lineTo(0.032 * k, 0);
+    ctx.closePath();
+    ctx.fill();
+    const frond = [
+      [-0.4, -0.14],
+      [-0.26, -0.32],
+      [-0.08, -0.4],
+      [0.1, -0.38],
+      [0.28, -0.28],
+      [0.42, -0.12]
+    ];
+    ctx.fillStyle = "#146434";
+    for (let i = 0; i < frond.length; i++) {
+      const tx = frond[i][0] * k;
+      const ty = -h + frond[i][1] * k;
+      ctx.beginPath();
+      ctx.moveTo(0, -h);
+      ctx.lineTo(tx, ty);
+      ctx.lineTo(tx * 0.2, -h + (ty + h) * 0.25);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawSign(k, variant) {
+    const postH = 0.56 * k;
+    const bw = 0.26 * k;
+    const bh = 0.18 * k;
+    ctx.fillStyle = "#3c3834";
+    ctx.fillRect(-0.02 * k, -postH, 0.04 * k, postH);
+    ctx.fillStyle = "#f4efe2";
+    ctx.fillRect(-bw / 2, -postH - bh, bw, bh);
+    ctx.strokeStyle = "#d10e18";
+    ctx.lineWidth = 0.018 * k;
+    ctx.strokeRect(-bw / 2, -postH - bh, bw, bh);
+    ctx.fillStyle = "#d10e18";
+    if (variant === 0) {
+      const cy = -postH - bh * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-bw * 0.2, cy - bh * 0.26);
+      ctx.lineTo(bw * 0.16, cy);
+      ctx.lineTo(-bw * 0.2, cy + bh * 0.26);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      const y0 = -postH - bh * 0.72;
+      ctx.fillRect(-bw * 0.3, y0, bw * 0.6, bh * 0.14);
+      ctx.fillRect(-bw * 0.3, y0 + bh * 0.3, bw * 0.6, bh * 0.14);
     }
   }
 
@@ -542,45 +711,75 @@
     drawSky();
 
     let maxY = viewH;
+    let lineU = viewH;
     let x = 0;
     let dx = -(base.curve * basePercent) * CURVE_SCALE;
-    const spans = [];
+    const layers = [];
+    let sawRoad = false;
+    spriteStamp++;
 
     for (let n = 0; n < DRAW; n++) {
       const seg = segments[(base.index + n) % nSeg];
       const looped = seg.index < base.index;
       const camZ = position - (looped ? trackLength : 0);
+      const camX = playerX * ROAD_W - x;
+      const camY = playerY + CAM_H;
 
-      project(seg.p1, playerX * ROAD_W - x, playerY + CAM_H, camZ);
-      project(seg.p2, playerX * ROAD_W - x - dx, playerY + CAM_H, camZ);
+      project(seg.p1, camX, camY, camZ);
+      project(seg.p2, camX - dx, camY, camZ);
+
+      const y1u = projectSpriteY(seg.p1.world.y, seg.p1.world.z - camZ, camY);
+      const y2u = projectSpriteY(seg.p2.world.y, seg.p2.world.z - camZ, camY);
+      if (seg.p1.camera.z <= camDepth) seg.spriteHide = false;
+      else if (y2u >= lineU + 2 || y2u >= y1u + 2) seg.spriteHide = true;
+      else if (y2u < lineU - 2 && y2u < y1u - 2) seg.spriteHide = false;
+
+      const sprites = [];
+      if (seg.sprites) {
+        const list = seg.sprites;
+        for (let s = 0; s < list.length; s++) {
+          const queued = queueSprite(list[s], camX, dx, camY, camZ, maxY, lineU, seg.spriteHide === true);
+          if (queued) sprites.push(queued);
+        }
+      }
 
       x += dx;
       dx += seg.curve * CURVE_SCALE;
 
-      if (seg.p1.camera.z <= camDepth ||
-          seg.p2.screen.y >= seg.p1.screen.y ||
-          seg.p2.screen.y >= maxY) continue;
+      let span = null;
+      if (!(seg.p1.camera.z <= camDepth ||
+            seg.p2.screen.y >= seg.p1.screen.y ||
+            seg.p2.screen.y >= maxY)) {
+        const col = seg.dark ? PAL.dark : PAL.light;
+        const grade = (seg.p2.world.y - seg.p1.world.y) / SEG;
+        span = {
+          grass: col.grass,
+          rumble: col.rumble,
+          lane: col.lane,
+          road: shadeRoad(seg.dark, grade),
+          x1: seg.p1.screen.x,
+          y1: seg.p1.screen.y,
+          w1: seg.p1.screen.w,
+          x2: seg.p2.screen.x,
+          y2: seg.p2.screen.y,
+          w2: seg.p2.screen.w
+        };
+        maxY = seg.p2.screen.y;
+        lineU = y2u;
+        sawRoad = true;
+      }
 
-      const col = seg.dark ? PAL.dark : PAL.light;
-      const grade = (seg.p2.world.y - seg.p1.world.y) / SEG;
-      spans.push({
-        grass: col.grass,
-        rumble: col.rumble,
-        lane: col.lane,
-        road: shadeRoad(seg.dark, grade),
-        x1: seg.p1.screen.x,
-        y1: seg.p1.screen.y,
-        w1: seg.p1.screen.w,
-        x2: seg.p2.screen.x,
-        y2: seg.p2.screen.y,
-        w2: seg.p2.screen.w
-      });
-      maxY = seg.p2.screen.y;
+      if (span || sprites.length) layers.push({ span: span, sprites: sprites });
     }
 
-    drawHorizon(spans.length ? maxY : viewH * HORIZON);
+    drawHorizon(sawRoad ? maxY : viewH * HORIZON);
 
-    for (let i = spans.length - 1; i >= 0; i--) drawSeg(spans[i]);
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      if (layer.span) drawSeg(layer.span);
+      const list = layer.sprites;
+      for (let s = 0; s < list.length; s++) drawRoadside(list[s]);
+    }
 
     drawCar();
     drawHud();
