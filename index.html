@@ -91,6 +91,8 @@
   const decel = -maxSpeed / 5;
   const offRoadDecel = -maxSpeed / 2;
   const offRoadLimit = maxSpeed / 4;
+  const RACE_SECS = 90;
+  const COUNT_SECS = 3;
 
   const SKY_BANDS = (function () {
     const stops = [
@@ -135,6 +137,9 @@
   let horizonScroll = 0;
   let viewW = 1;
   let viewH = 1;
+  let phase = "ready";
+  let timeLeft = RACE_SECS;
+  let countLeft = 0;
   const held = {};
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -399,16 +404,83 @@
     ctx.fillStyle = "#ffb03a";
     ctx.fillText("KM/H", x, y + 24 * u);
 
+    const timeHot = phase === "fail" || (phase === "race" && timeLeft <= 10);
+    const timeStr = Math.max(0, timeLeft).toFixed(1).replace(".", ",");
+    ctx.font = Math.round(22 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 4 * u;
+    ctx.strokeText("TID", x, 36 * u);
+    ctx.fillStyle = "#ffb03a";
+    ctx.fillText("TID", x, 36 * u);
+    ctx.font = "italic " + Math.round(72 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 8 * u;
+    ctx.strokeText(timeStr, x, 108 * u);
+    ctx.fillStyle = timeHot ? "#ff4a38" : "#ffe14a";
+    ctx.fillText(timeStr, x, 108 * u);
+
     ctx.textAlign = "left";
     ctx.font = Math.round(18 * u) + "px Impact, 'Arial Black', sans-serif";
     ctx.lineWidth = 4 * u;
-    const hint = "← →  /  A D      OP GAS      NED BREMSE      R GENSTART";
+    const hint = "SPACE START      ← →  /  A D      OP GAS      NED BREMSE      R GENSTART";
+    ctx.strokeStyle = "#1a0708";
     ctx.strokeText(hint, 20 * u, 34 * u);
     ctx.fillStyle = "#fff1c9";
     ctx.fillText(hint, 20 * u, 34 * u);
   }
 
+  function drawBanner() {
+    let title = "";
+    let sub = "";
+    if (phase === "ready") {
+      title = "TRYK SPACE";
+      sub = "NÅ MÅL FØR TIDEN";
+    } else if (phase === "count") {
+      title = String(Math.max(1, Math.ceil(countLeft)));
+    } else if (phase === "goal") {
+      title = "MÅL";
+      sub = "R GENSTARTER";
+    } else if (phase === "fail") {
+      title = "TIDEN ER UDE";
+      sub = "R GENSTARTER";
+    } else {
+      return;
+    }
+
+    const u = clamp(Math.min(viewW / 1280, viewH / 820), 0.55, 1.4);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1a0708";
+    let size = Math.round((phase === "count" ? 160 : 96) * u);
+    ctx.font = "italic " + size + "px Impact, 'Arial Black', sans-serif";
+    const maxW = viewW * 0.88;
+    while (size > 28 && ctx.measureText(title).width > maxW) {
+      size -= 4;
+      ctx.font = "italic " + size + "px Impact, 'Arial Black', sans-serif";
+    }
+    ctx.lineWidth = Math.max(4, size * 0.08);
+    const y = viewH * 0.36;
+    ctx.strokeText(title, viewW / 2, y);
+    ctx.fillStyle = phase === "fail" ? "#ff4a38" : "#ffe14a";
+    ctx.fillText(title, viewW / 2, y);
+    if (!sub) return;
+    ctx.font = Math.round(28 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 5 * u;
+    ctx.strokeText(sub, viewW / 2, y + 72 * u);
+    ctx.fillStyle = "#fff1c9";
+    ctx.fillText(sub, viewW / 2, y + 72 * u);
+  }
+
   function update(dt) {
+    if (phase === "count") {
+      countLeft -= dt;
+      if (countLeft <= 0) {
+        countLeft = 0;
+        phase = "race";
+      }
+      return;
+    }
+    if (phase !== "race") return;
+
     const seg = findSegment(position + playerZ);
     const sp = speed / maxSpeed;
     const dx = dt * 2 * sp;
@@ -419,8 +491,13 @@
     const brake = held.ArrowDown || held.s;
 
     position += dt * speed;
-    while (position >= trackLength) position -= trackLength;
     horizonScroll += dt * speed * horizonCurve() * HORIZON_K;
+    if (position >= trackLength) {
+      position = 0;
+      speed = 0;
+      phase = "goal";
+      return;
+    }
 
     if (left) playerX -= steer;
     else if (right) playerX += steer;
@@ -445,6 +522,13 @@
 
     playerX = clamp(playerX, -2, 2);
     if (speed < 0) speed = 0;
+
+    timeLeft -= dt;
+    if (timeLeft <= 0) {
+      timeLeft = 0;
+      speed = 0;
+      phase = "fail";
+    }
   }
 
   function render() {
@@ -500,6 +584,7 @@
 
     drawCar();
     drawHud();
+    drawBanner();
   }
 
   function horizonCurve() {
@@ -657,13 +742,26 @@
     if (y < viewH) ctx.fillRect(0, y, viewW, viewH - y);
   }
 
-  function restart() {
+  function resetRun() {
     position = 0;
     speed = 0;
     playerX = 0;
     wheel = 0;
     hillGrade = 0;
     horizonScroll = 0;
+    timeLeft = RACE_SECS;
+    countLeft = 0;
+  }
+
+  function restart() {
+    resetRun();
+    phase = "ready";
+  }
+
+  function beginCountdown() {
+    resetRun();
+    countLeft = COUNT_SECS;
+    phase = "count";
   }
 
   function resize() {
@@ -681,11 +779,16 @@
 
   window.addEventListener("keydown", function (e) {
     const k = normKey(e.key);
-    if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight")
+    if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight" || k === " " || k === "Spacebar")
       e.preventDefault();
     if (k === "r") {
       if (!held.r) restart();
       held.r = true;
+      return;
+    }
+    if (k === " " || k === "Spacebar") {
+      if (!held[" "] && phase === "ready") beginCountdown();
+      held[" "] = true;
       return;
     }
     held[k] = true;
