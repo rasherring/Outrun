@@ -9,14 +9,14 @@
     margin: 0;
     height: 100%;
     overflow: hidden;
-    background: #062f86;
+    background: #081e60;
     user-select: none;
   }
   canvas {
     display: block;
     width: 100vw;
     height: 100vh;
-    background: #4fd0f0;
+    background: #081e60;
   }
   #crt {
     position: fixed;
@@ -61,7 +61,27 @@
   const offRoadDecel = -maxSpeed / 2;
   const offRoadLimit = maxSpeed / 4;
 
-  const FOG = "#4fd0f0";
+  const SKY_BANDS = (function () {
+    const stops = [
+      [214, 248, 255],
+      [46, 168, 236],
+      [14, 72, 176],
+      [6, 20, 72]
+    ];
+    const steps = 40;
+    const bands = [];
+    for (let i = 0; i < steps; i++) {
+      const u = i / (steps - 1) * (stops.length - 1);
+      const a = stops[Math.floor(u)];
+      const b = stops[Math.min(stops.length - 1, Math.floor(u) + 1)];
+      const t = u - Math.floor(u);
+      const r = Math.round(a[0] + (b[0] - a[0]) * t);
+      const g = Math.round(a[1] + (b[1] - a[1]) * t);
+      const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+      bands.push("rgb(" + r + "," + g + "," + bl + ")");
+    }
+    return bands;
+  })();
   const PAL = {
     light: { road: "#848894", grass: "#22c240", rumble: "#f6f1e4", lane: "#fff3c2" },
     dark:  { road: "#555a68", grass: "#12962c", rumble: "#d10e18", lane: null }
@@ -83,7 +103,6 @@
   let hillGrade = 0;
   let viewW = 1;
   let viewH = 1;
-  let skyGrad = null;
   const held = {};
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -403,8 +422,7 @@
     const playerY = lerp(playerSeg.p1.world.y, playerSeg.p2.world.y, playerPercent);
     const nSeg = segments.length;
 
-    ctx.fillStyle = skyGrad;
-    ctx.fillRect(0, 0, viewW, viewH);
+    drawSky();
 
     let maxY = viewH;
     let x = 0;
@@ -449,6 +467,23 @@
     drawHud();
   }
 
+  function drawSky() {
+    const n = SKY_BANDS.length;
+    const skyH = Math.max(1, Math.round(viewH * HORIZON));
+    const bandH = 3;
+    const rows = Math.ceil(skyH / bandH);
+    let y = 0;
+    for (let i = 0; i < rows; i++) {
+      const idx = Math.round((rows === 1 ? 1 : i / (rows - 1)) * (n - 1));
+      ctx.fillStyle = SKY_BANDS[idx];
+      const h = Math.min(bandH, skyH - y);
+      ctx.fillRect(0, y, viewW, h);
+      y += h;
+    }
+    ctx.fillStyle = SKY_BANDS[n - 1];
+    if (y < viewH) ctx.fillRect(0, y, viewW, viewH - y);
+  }
+
   function restart() {
     position = 0;
     speed = 0;
@@ -464,11 +499,6 @@
     canvas.width = Math.floor(viewW * dpr);
     canvas.height = Math.floor(viewH * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    skyGrad = ctx.createLinearGradient(0, 0, 0, viewH);
-    skyGrad.addColorStop(0, "#062f86");
-    skyGrad.addColorStop(0.28, "#1a78c8");
-    skyGrad.addColorStop(HORIZON, FOG);
-    skyGrad.addColorStop(1, FOG);
   }
 
   function normKey(k) {
