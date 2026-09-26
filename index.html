@@ -45,6 +45,7 @@
   const SEG = 200;
   const RUMBLE = 4;
   const ROAD_W = 3200;
+  const ROAD_DRAW_W = 2400;
   const CURVE_SCALE = ROAD_W / 2000;
   const HORIZON = 0.41;
   const CAM_H = 1000;
@@ -131,6 +132,7 @@
   let trackLength = 0;
   let position = 0;
   let speed = 0;
+  let recover = 0;
   let playerX = 0;
   let wheel = 0;
   let hillGrade = 0;
@@ -142,6 +144,25 @@
   let countLeft = 0;
   let nextSpriteId = 1;
   let spriteStamp = 0;
+  let traffic = [];
+  const CAR_COLORS = [
+    ["#d10e18", "#8e0c12", "#9fd0ea"],
+    ["#f4f1ea", "#c8c2b4", "#7aa0b8"],
+    ["#1c6ebd", "#124e88", "#d7eef8"],
+    ["#f0b429", "#c48a10", "#3d4e5c"],
+    ["#2a9a45", "#176b30", "#d5f0dc"],
+    ["#e36a12", "#b84e0c", "#ffe0c2"]
+  ];
+  const CAR_HALF = 0.084;
+  const CAR_HIT = 0.126;
+  const CAR_GAP = SEG * 48;
+  let audioCtx = null;
+  let engine = null;
+  let muted = false;
+  let bumping = false;
+  let bumpGain = null;
+  let rpm = 0.18;
+  let engineVol = 0;
   const held = {};
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -216,6 +237,7 @@
     addRoad(50, 120, 50, 0, 0);
     trackLength = segments.length * SEG;
     placeSprites();
+    placeTraffic();
   }
 
   function addSprite(i, kind, variant, offset) {
@@ -247,6 +269,134 @@
     }
   }
 
+  function addTraffic(i, variant, offset, pace, weave, amp, phase) {
+    const seg = segments[i];
+    if (!seg) return;
+    traffic.push({
+      id: nextSpriteId++,
+      kind: "car",
+      variant: variant,
+      offset: offset,
+      z: seg.p1.world.z,
+      y: seg.p1.world.y,
+      t: 0,
+      stamp: 0,
+      speed: maxSpeed * pace,
+      homeZ: seg.p1.world.z,
+      lane: offset,
+      weave: weave,
+      amp: amp,
+      phase0: phase,
+      phase: phase,
+      gone: false
+    });
+  }
+
+  function placeTraffic() {
+    traffic = [];
+    const n = segments.length;
+    const count = 56;
+    const edge = 90;
+    if (n <= edge * 2 + count) return;
+    const gap = Math.floor((n - edge * 2) / count);
+    const lanes = [-0.46, 0.4, -0.14, 0.5, -0.38, 0.18, -0.5, 0.28];
+    const paces = [0.47, 0.78, 0.91, 0.58, 0.86, 0.64, 0.94, 0.52, 0.73, 0.89];
+    for (let c = 0; c < count; c++) {
+      const i = edge + gap * c + Math.floor(gap * 0.5);
+      if (i < 0 || i >= n - 40) continue;
+      const amp = 0.12 + (c % 4) * 0.03;
+      addTraffic(
+        i,
+        c % CAR_COLORS.length,
+        lanes[c % lanes.length],
+        paces[c % paces.length],
+        0.45 + (c % 5) * 0.12,
+        amp,
+        c * 1.7
+      );
+    }
+  }
+
+  function settleCar(car) {
+    let z = car.z;
+    if (z < 0) z = 0;
+    if (z >= trackLength) z = trackLength - 1;
+    const i = Math.floor(z / SEG);
+    const seg = segments[i];
+    if (!seg) return;
+    const t = z / SEG - i;
+    car.t = t;
+    car.y = seg.p1.world.y + (seg.p2.world.y - seg.p1.world.y) * t;
+  }
+
+  function separateTraffic() {
+    const live = [];
+    for (let i = 0; i < traffic.length; i++) {
+      if (!traffic[i].gone) live.push(traffic[i]);
+    }
+    live.sort(function (a, b) { return b.z - a.z; });
+    for (let i = 1; i < live.length; i++) {
+      const maxZ = live[i - 1].z - CAR_GAP;
+      if (live[i].z > maxZ) live[i].z = maxZ;
+    }
+  }
+
+  function updateTraffic(dt) {
+    const limit = 1 - CAR_HALF - 0.04;
+    for (let i = 0; i < traffic.length; i++) {
+      const car = traffic[i];
+      if (car.gone) continue;
+      if (car.z <= position) {
+        car.gone = true;
+        continue;
+      }
+      car.z += car.speed * dt;
+      if (car.z > trackLength - 1) car.z = trackLength - 1;
+      car.phase += car.weave * dt;
+      car.offset = clamp(car.lane + Math.sin(car.phase) * car.amp, -limit, limit);
+    }
+    separateTraffic();
+    for (let i = 0; i < traffic.length; i++) {
+      if (!traffic[i].gone) settleCar(traffic[i]);
+    }
+  }
+
+  function resetTraffic() {
+    const limit = 1 - CAR_HALF - 0.04;
+    for (let i = 0; i < traffic.length; i++) {
+      const car = traffic[i];
+      car.z = car.homeZ;
+      car.phase = car.phase0;
+      car.offset = clamp(car.lane + Math.sin(car.phase) * car.amp, -limit, limit);
+      car.gone = false;
+      settleCar(car);
+    }
+  }
+
+  function resolveTraffic() {
+    const nose = position + playerZ;
+    const holdGap = SEG * 0.4;
+    const brakeGap = SEG * 1.5;
+    let hit = false;
+    for (let i = 0; i < traffic.length; i++) {
+      const car = traffic[i];
+      if (car.gone) continue;
+      if (Math.abs(playerX - car.offset) > CAR_HIT) continue;
+      const ahead = car.z - nose;
+      if (ahead > brakeGap || ahead < -SEG * 1.25) continue;
+      hit = true;
+      const crawl = maxSpeed * 0.04;
+      if (speed > crawl) speed = crawl;
+      recover = 4.5;
+      if (ahead < holdGap) {
+        const holdPos = car.z - playerZ - holdGap;
+        if (position > holdPos) position = holdPos > 0 ? holdPos : 0;
+      }
+    }
+    if (hit && !bumping) playBump();
+    bumping = hit;
+  }
+
   function findSegment(z) {
     const n = segments.length;
     let i = Math.floor(z / SEG) % n;
@@ -275,7 +425,7 @@
     p.screen.scale = scale;
     p.screen.x = Math.round(viewW / 2 + scale * p.camera.x * viewW / 2);
     p.screen.y = Math.round(viewH * HORIZON - scale * p.camera.y * viewH / 2);
-    p.screen.w = Math.round(scale * ROAD_W * viewW / 2);
+    p.screen.w = Math.round(scale * ROAD_DRAW_W * viewW / 2);
   }
 
   function quad(x1, y1, x2, y2, x3, y3, x4, y4, color) {
@@ -329,6 +479,53 @@
     }
   }
 
+  function drawFinish(s) {
+    const yA = s.y1;
+    const yB = s.y2;
+    const xAl = s.x1 - s.w1;
+    const xAr = s.x1 + s.w1;
+    const xBl = s.x2 - s.w2;
+    const xBr = s.x2 + s.w2;
+    const cols = 8;
+    for (let i = 0; i < cols; i++) {
+      const u0 = i / cols;
+      const u1 = (i + 1) / cols;
+      quad(
+        xAl + (xAr - xAl) * u0, yA,
+        xAl + (xAr - xAl) * u1, yA,
+        xBl + (xBr - xBl) * u1, yB,
+        xBl + (xBr - xBl) * u0, yB,
+        (i + s.band) % 2 ? "#fffef8" : "#101114"
+      );
+    }
+  }
+
+  function drawGate(g) {
+    const w = g.w;
+    const x = g.x;
+    const y = g.y;
+    const half = w * 1.36;
+    const postW = Math.max(2, w * 0.12);
+    const postH = w * 2.7;
+    const bh = w * 0.58;
+    const top = y - postH;
+    const bx = x - half - postW * 0.5;
+    const bw = half * 2 + postW;
+    ctx.fillStyle = "#241c14";
+    ctx.fillRect(bx, top, postW, postH);
+    ctx.fillRect(bx + bw - postW, top, postW, postH);
+    ctx.fillStyle = "#ffe14a";
+    ctx.fillRect(bx, top, bw, bh);
+    ctx.strokeStyle = "#1a0708";
+    ctx.lineWidth = Math.max(2, bh * 0.08);
+    ctx.strokeRect(bx, top, bw, bh);
+    ctx.fillStyle = "#1a0708";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "italic " + Math.round(bh * 0.58) + "px Impact, 'Arial Black', sans-serif";
+    ctx.fillText("FINISH", x, top + bh * 0.52);
+  }
+
   function projectSpriteY(worldY, cz, camY) {
     if (cz <= 0.1) return 1e9;
     return viewH * HORIZON - (camDepth / cz) * (worldY - camY) * viewH / 2;
@@ -376,6 +573,72 @@
     else if (sp.variant === 2) drawPalm(k);
     else drawRoundTree(k);
     ctx.restore();
+  }
+
+  function queueCar(car, camX, dx, camY, camZ, clipY, lineU, hidden) {
+    if (car.stamp === spriteStamp) return null;
+    car.stamp = spriteStamp;
+    const z = car.z >= trackLength ? trackLength - 1 : car.z;
+    const cz = z - camZ;
+    if (!(cz > 0.05)) return null;
+    const scale = camDepth / cz;
+    const sw = scale * ROAD_W * viewW / 2;
+    const cx = -(camX - car.t * dx);
+    const roadX = viewW / 2 + scale * cx * viewW / 2;
+    car.roadX = roadX;
+    car.roadW = sw;
+    car.sx = roadX + car.offset * sw;
+    car.sy = viewH * HORIZON - scale * (car.y - camY) * viewH / 2;
+    car.sk = sw;
+    car.cz = cz;
+    car.clipY = clipY;
+    car.lineU = lineU;
+    car.hidden = hidden;
+    return car;
+  }
+
+  function drawTrafficCar(sp) {
+    if (!(sp.cz > 0.05)) return;
+    const near = sp.cz < SEG * 48;
+    if (sp.hidden && !near) return;
+    const clipBottom = (sp.clipY < sp.lineU ? sp.clipY : sp.lineU) - 1;
+    ctx.save();
+    if (!near && clipBottom > 1) {
+      ctx.beginPath();
+      ctx.rect(0, 0, viewW, clipBottom);
+      ctx.clip();
+    }
+    ctx.translate(sp.sx, sp.sy);
+    paintTraffic(sp.sk * 0.35, sp.variant);
+    ctx.restore();
+  }
+
+  function paintTraffic(k, variant) {
+    const col = CAR_COLORS[variant % CAR_COLORS.length];
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(0, -0.012 * k, 0.24 * k, 0.03 * k, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#121314";
+    ctx.fillRect(-0.24 * k, -0.09 * k, 0.07 * k, 0.09 * k);
+    ctx.fillRect(0.17 * k, -0.09 * k, 0.07 * k, 0.09 * k);
+    ctx.fillStyle = col[0];
+    ctx.fillRect(-0.2 * k, -0.2 * k, 0.4 * k, 0.13 * k);
+    ctx.fillStyle = col[1];
+    ctx.beginPath();
+    ctx.moveTo(-0.16 * k, -0.2 * k);
+    ctx.lineTo(0.16 * k, -0.2 * k);
+    ctx.lineTo(0.1 * k, -0.34 * k);
+    ctx.lineTo(-0.1 * k, -0.34 * k);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = col[2];
+    ctx.fillRect(-0.09 * k, -0.31 * k, 0.18 * k, 0.07 * k);
+    ctx.fillStyle = "#ff2a2a";
+    ctx.fillRect(-0.17 * k, -0.155 * k, 0.07 * k, 0.035 * k);
+    ctx.fillRect(0.1 * k, -0.155 * k, 0.07 * k, 0.035 * k);
+    ctx.fillStyle = "#efe6c8";
+    ctx.fillRect(-0.045 * k, -0.1 * k, 0.09 * k, 0.028 * k);
   }
 
   function drawRoundTree(k) {
@@ -484,7 +747,7 @@
     const off = Math.abs(playerX) > 1;
     const sp = speed / maxSpeed;
     const bob = off ? Math.sin(position * 0.045) * 3.2 * sp : 0;
-    const sc = Math.min(viewW * 0.14, viewH * 0.3) / 160;
+    const sc = Math.min(viewW * 0.14, viewH * 0.3) / 160 * 1.4;
     const lean = wheel;
     const brakingNow = held.ArrowDown || held.s;
 
@@ -650,6 +913,8 @@
     }
     if (phase !== "race") return;
 
+    updateTraffic(dt);
+
     const seg = findSegment(position + playerZ);
     const sp = speed / maxSpeed;
     const dx = dt * 2 * sp;
@@ -680,17 +945,20 @@
     if (hillGrade > 0) cap = maxSpeed / (1 + hillGrade * 2.2);
     else cap = maxSpeed * (1 + Math.min(0.14, -hillGrade * 0.4));
 
-    if (gas) speed += accel * dt;
+    const climb = recover > 0 ? 0.2 : 1;
+    if (recover > 0) recover -= dt;
+    if (gas) speed += accel * climb * dt;
     else if (brake) speed += braking * dt;
     else speed += decel * dt;
 
     const off = Math.abs(playerX) > 1;
     if (off && speed > offRoadLimit) speed += offRoadDecel * dt;
-    if (hillGrade < 0 && !brake && !off) speed += (-hillGrade) * maxSpeed * 0.4 * dt;
+    if (hillGrade < 0 && !brake && !off && recover <= 0) speed += (-hillGrade) * maxSpeed * 0.4 * dt;
     if (speed > cap) speed = Math.max(cap, speed - maxSpeed * 0.75 * dt);
 
     playerX = clamp(playerX, -2, 2);
     if (speed < 0) speed = 0;
+    resolveTraffic();
 
     timeLeft -= dt;
     if (timeLeft <= 0) {
@@ -716,17 +984,31 @@
     let dx = -(base.curve * basePercent) * CURVE_SCALE;
     const layers = [];
     let sawRoad = false;
+    let gate = null;
     spriteStamp++;
+    const carBucket = new Array(nSeg);
+    for (let c = 0; c < traffic.length; c++) {
+      const car = traffic[c];
+      if (car.gone || car.z <= position) continue;
+      const z = car.z >= trackLength ? trackLength - 1 : car.z;
+      const idx = Math.floor(z / SEG);
+      if (idx < 0 || idx >= nSeg) continue;
+      if (!carBucket[idx]) carBucket[idx] = [];
+      carBucket[idx].push(car);
+    }
 
     for (let n = 0; n < DRAW; n++) {
       const seg = segments[(base.index + n) % nSeg];
       const looped = seg.index < base.index;
       const camZ = position - (looped ? trackLength : 0);
-      const camX = playerX * ROAD_W - x;
+      const camX = playerX * ROAD_DRAW_W - x;
       const camY = playerY + CAM_H;
 
       project(seg.p1, camX, camY, camZ);
       project(seg.p2, camX - dx, camY, camZ);
+      if (!looped && seg.index === nSeg - 1 && seg.p2.camera.z > 1 && seg.p2.screen.w > 1) {
+        gate = { x: seg.p2.screen.x, y: seg.p2.screen.y, w: seg.p2.screen.w };
+      }
 
       const y1u = projectSpriteY(seg.p1.world.y, seg.p1.world.z - camZ, camY);
       const y2u = projectSpriteY(seg.p2.world.y, seg.p2.world.z - camZ, camY);
@@ -739,6 +1021,15 @@
         const list = seg.sprites;
         for (let s = 0; s < list.length; s++) {
           const queued = queueSprite(list[s], camX, dx, camY, camZ, maxY, lineU, seg.spriteHide === true);
+          if (queued) sprites.push(queued);
+        }
+      }
+      const mine = !looped && carBucket[seg.index];
+      if (mine) {
+        for (let c = 0; c < mine.length; c++) {
+          const car = mine[c];
+          const hide = seg.spriteHide === true && (car.z - camZ) > SEG * 48;
+          const queued = queueCar(car, camX, dx, camY, camZ, maxY, lineU, hide);
           if (queued) sprites.push(queued);
         }
       }
@@ -762,7 +1053,9 @@
           w1: seg.p1.screen.w,
           x2: seg.p2.screen.x,
           y2: seg.p2.screen.y,
-          w2: seg.p2.screen.w
+          w2: seg.p2.screen.w,
+          finish: !looped && seg.index >= nSeg - 4,
+          band: seg.index
         };
         maxY = seg.p2.screen.y;
         lineU = y2u;
@@ -776,11 +1069,18 @@
 
     for (let i = layers.length - 1; i >= 0; i--) {
       const layer = layers[i];
-      if (layer.span) drawSeg(layer.span);
+      if (layer.span) {
+        drawSeg(layer.span);
+        if (layer.span.finish) drawFinish(layer.span);
+      }
       const list = layer.sprites;
-      for (let s = 0; s < list.length; s++) drawRoadside(list[s]);
+      for (let s = 0; s < list.length; s++) {
+        if (list[s].kind === "car") drawTrafficCar(list[s]);
+        else drawRoadside(list[s]);
+      }
     }
 
+    if (gate) drawGate(gate);
     drawCar();
     drawHud();
     drawBanner();
@@ -944,12 +1244,14 @@
   function resetRun() {
     position = 0;
     speed = 0;
+    recover = 0;
     playerX = 0;
     wheel = 0;
     hillGrade = 0;
     horizonScroll = 0;
     timeLeft = RACE_SECS;
     countLeft = 0;
+    resetTraffic();
   }
 
   function restart() {
@@ -976,8 +1278,139 @@
     return k.length === 1 ? k.toLowerCase() : k;
   }
 
+  function ensureAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audioCtx) {
+      audioCtx = new AC();
+      const master = audioCtx.createGain();
+      master.gain.value = 0;
+      const shape = audioCtx.createWaveShaper();
+      const curve = new Float32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const x = (i / 255) * 2 - 1;
+        curve[i] = Math.tanh(x * 2.4);
+      }
+      shape.curve = curve;
+      shape.oversample = "2x";
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 480;
+      filter.Q.value = 0.7;
+      const osc = audioCtx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.value = 55;
+      const osc2 = audioCtx.createOscillator();
+      osc2.type = "sawtooth";
+      osc2.frequency.value = 110;
+      const g2 = audioCtx.createGain();
+      g2.gain.value = 0.28;
+      const sub = audioCtx.createOscillator();
+      sub.type = "sine";
+      sub.frequency.value = 28;
+      const gs = audioCtx.createGain();
+      gs.gain.value = 0.55;
+      const noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+      const nd = noiseBuf.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = noiseBuf;
+      noise.loop = true;
+      const nFilter = audioCtx.createBiquadFilter();
+      nFilter.type = "bandpass";
+      nFilter.frequency.value = 180;
+      nFilter.Q.value = 0.6;
+      const gn = audioCtx.createGain();
+      gn.gain.value = 0.12;
+      osc.connect(shape);
+      osc2.connect(g2);
+      g2.connect(shape);
+      sub.connect(gs);
+      gs.connect(shape);
+      noise.connect(nFilter);
+      nFilter.connect(gn);
+      gn.connect(shape);
+      shape.connect(filter);
+      filter.connect(master);
+      master.connect(audioCtx.destination);
+      osc.start();
+      osc2.start();
+      sub.start();
+      noise.start();
+      engine = { osc: osc, osc2: osc2, sub: sub, filter: filter, nFilter: nFilter, master: master };
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  }
+
+  function updateEngine(dt) {
+    if (!engine) return;
+    const driving = phase === "race" || phase === "count";
+    const sp = clamp(speed / maxSpeed, 0, 1);
+    const brake = phase === "race" && !!(held.ArrowDown || held.s);
+    let target = 0.18 + sp * 0.82;
+    if (brake) target = 0.12 + sp * 0.28;
+    rpm += (target - rpm) * (1 - Math.exp(-dt * (brake ? 8 : 3.2)));
+    const freq = 52 + rpm * 168;
+    engine.osc.frequency.value = freq;
+    engine.osc2.frequency.value = freq * 2.015;
+    engine.sub.frequency.value = freq * 0.5;
+    engine.filter.frequency.value = 360 + rpm * 1900;
+    engine.nFilter.frequency.value = 140 + rpm * 520;
+    const targetVol = driving && !muted ? 0.06 + rpm * 0.12 : 0;
+    engineVol += (targetVol - engineVol) * (1 - Math.exp(-dt * (muted || !driving ? 18 : 8)));
+    engine.master.gain.value = engineVol;
+  }
+
+  function playBump() {
+    ensureAudio();
+    if (!audioCtx || muted) return;
+    if (!bumpGain) {
+      bumpGain = audioCtx.createGain();
+      bumpGain.connect(audioCtx.destination);
+    }
+    bumpGain.gain.value = 1;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(170, t);
+    osc.frequency.exponentialRampToValueAtTime(52, t + 0.09);
+    const og = audioCtx.createGain();
+    og.gain.setValueAtTime(0.26, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    osc.connect(og);
+    og.connect(bumpGain);
+    osc.start(t);
+    osc.stop(t + 0.15);
+    const len = Math.max(1, Math.floor(audioCtx.sampleRate * 0.07));
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const nf = audioCtx.createBiquadFilter();
+    nf.type = "highpass";
+    nf.frequency.value = 800;
+    const ng = audioCtx.createGain();
+    ng.gain.setValueAtTime(0.16, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    src.connect(nf);
+    nf.connect(ng);
+    ng.connect(bumpGain);
+    src.start(t);
+    src.stop(t + 0.08);
+  }
+
   window.addEventListener("keydown", function (e) {
     const k = normKey(e.key);
+    ensureAudio();
+    if (k === "m") {
+      if (!held.m) {
+        muted = !muted;
+        if (bumpGain) bumpGain.gain.value = muted ? 0 : 1;
+      }
+      held.m = true;
+      return;
+    }
     if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight" || k === " " || k === "Spacebar")
       e.preventDefault();
     if (k === "r") {
@@ -1020,6 +1453,7 @@
       update(STEP);
       acc -= STEP;
     }
+    updateEngine(dt);
     render();
     requestAnimationFrame(frame);
   }
