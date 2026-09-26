@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outrun</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #062f86;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    background: #4fd0f0;
+  }
+  #crt {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.16) 0px,
+      rgba(0, 0, 0, 0.16) 1px,
+      transparent 1px,
+      transparent 4px
+    );
+    box-shadow:
+      inset 0 0 160px 42px rgba(0, 0, 0, 0.5),
+      inset 0 0 2px rgba(255, 255, 255, 0.18);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="crt"></div>
+<script>
+(function () {
+  "use strict";
+
+  const SEG = 200;
+  const RUMBLE = 4;
+  const ROAD_W = 3200;
+  const CURVE_SCALE = ROAD_W / 2000;
+  const HORIZON = 0.41;
+  const CAM_H = 1000;
+  const DRAW = 800;
+  const CENTRIFUGAL = 0.3;
+  const FOV = 60;
+
+  const camDepth = 1 / Math.tan((FOV / 2) * Math.PI / 180);
+  const playerZ = CAM_H * camDepth;
+  const maxSpeed = SEG * 60;
+  const accel = maxSpeed / 5;
+  const braking = -maxSpeed;
+  const decel = -maxSpeed / 5;
+  const offRoadDecel = -maxSpeed / 2;
+  const offRoadLimit = maxSpeed / 4;
+
+  const FOG = "#4fd0f0";
+  const PAL = {
+    light: { road: "#848894", grass: "#22c240", rumble: "#f6f1e4", lane: "#fff3c2" },
+    dark:  { road: "#555a68", grass: "#12962c", rumble: "#d10e18", lane: null }
+  };
+  const ROAD_RGB = {
+    light: [132, 136, 148],
+    dark: [85, 90, 104]
+  };
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  let segments = [];
+  let trackLength = 0;
+  let position = 0;
+  let speed = 0;
+  let playerX = 0;
+  let wheel = 0;
+  let hillGrade = 0;
+  let viewW = 1;
+  let viewH = 1;
+  let skyGrad = null;
+  const held = {};
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function easeIn(a, b, t) { return a + (b - a) * t * t; }
+  function easeInOut(a, b, t) {
+    return a + (b - a) * ((-Math.cos(t * Math.PI) / 2) + 0.5);
+  }
+
+  function lastY() {
+    return segments.length ? segments[segments.length - 1].p2.world.y : 0;
+  }
+
+  function addSegment(curve, y) {
+    const n = segments.length;
+    segments.push({
+      index: n,
+      curve: curve,
+      dark: Math.floor(n / RUMBLE) % 2 === 1,
+      p1: { world: { y: lastY(), z: n * SEG }, camera: {}, screen: {} },
+      p2: { world: { y: y, z: (n + 1) * SEG }, camera: {}, screen: {} }
+    });
+  }
+
+  function addRoad(enter, hold, leave, curve, hill) {
+    const startY = lastY();
+    const endY = startY + hill * SEG;
+    const total = enter + hold + leave;
+    let n;
+    for (n = 0; n < enter; n++)
+      addSegment(easeIn(0, curve, n / enter), easeInOut(startY, endY, n / total));
+    for (n = 0; n < hold; n++)
+      addSegment(curve, easeInOut(startY, endY, (enter + n) / total));
+    for (n = 0; n < leave; n++)
+      addSegment(easeInOut(curve, 0, n / leave), easeInOut(startY, endY, (enter + hold + n) / total));
+  }
+
+  function closeHill() {
+    const y = lastY();
+    if (Math.abs(y) < 1) {
+      if (segments.length) segments[segments.length - 1].p2.world.y = 0;
+      return;
+    }
+    const steps = 200;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      addSegment(0, y * (1 - easeInOut(0, 1, t)));
+    }
+    segments[segments.length - 1].p2.world.y = 0;
+  }
+
+  function buildTrack() {
+    segments = [];
+    addRoad(50, 180, 50, 0, 0);
+    addRoad(40, 150, 40, 2, 0);
+    addRoad(40, 70, 40, 0, 32);
+    addRoad(35, 110, 35, -3, 8);
+    addRoad(40, 70, 40, -1, -40);
+    addRoad(28, 55, 28, 4.5, 0);
+    addRoad(36, 60, 36, 1, 34);
+    addRoad(26, 48, 26, -4.5, 6);
+    addRoad(34, 70, 34, 2.5, -30);
+    addRoad(40, 170, 40, -2, 0);
+    addRoad(30, 36, 30, 0, 18);
+    addRoad(30, 36, 30, 0, -26);
+    addRoad(30, 40, 30, 0, 14);
+    addRoad(36, 120, 36, 3, 12);
+    addRoad(40, 140, 40, -3, -16);
+    addRoad(36, 80, 36, 2, 10);
+    addRoad(40, 90, 40, -4, -8);
+    closeHill();
+    addRoad(50, 120, 50, 0, 0);
+    trackLength = segments.length * SEG;
+  }
+
+  function findSegment(z) {
+    const n = segments.length;
+    let i = Math.floor(z / SEG) % n;
+    if (i < 0) i += n;
+    return segments[i];
+  }
+
+  function segPercent(z) {
+    let m = z % SEG;
+    if (m < 0) m += SEG;
+    return m / SEG;
+  }
+
+  function project(p, camX, camY, camZ) {
+    p.camera.x = -camX;
+    p.camera.y = p.world.y - camY;
+    p.camera.z = p.world.z - camZ;
+    if (p.camera.z <= 0.1) {
+      p.screen.scale = 0;
+      p.screen.x = viewW / 2;
+      p.screen.y = viewH + 4000;
+      p.screen.w = 0;
+      return;
+    }
+    const scale = camDepth / p.camera.z;
+    p.screen.scale = scale;
+    p.screen.x = Math.round(viewW / 2 + scale * p.camera.x * viewW / 2);
+    p.screen.y = Math.round(viewH * HORIZON - scale * p.camera.y * viewH / 2);
+    p.screen.w = Math.round(scale * ROAD_W * viewW / 2);
+  }
+
+  function quad(x1, y1, x2, y2, x3, y3, x4, y4, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineTo(x3, y3);
+    ctx.lineTo(x4, y4);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function shadeRoad(dark, grade) {
+    const base = dark ? ROAD_RGB.dark : ROAD_RGB.light;
+    const g = clamp(grade / 0.22, -1, 1);
+    let r, gc, b;
+    if (g >= 0) {
+      const k = g * 0.72;
+      r = base[0] * (1 - k);
+      gc = base[1] * (1 - k * 0.8);
+      b = base[2] * (1 - k * 0.52);
+    } else {
+      const k = -g * 0.64;
+      r = base[0] + (250 - base[0]) * k;
+      gc = base[1] + (236 - base[1]) * k;
+      b = base[2] + (208 - base[2]) * k;
+    }
+    return "rgb(" + (r + 0.5 | 0) + "," + (gc + 0.5 | 0) + "," + (b + 0.5 | 0) + ")";
+  }
+
+  function drawSeg(s) {
+    const x1 = s.x1, y1 = s.y1, w1 = s.w1;
+    const x2 = s.x2, y2 = s.y2, w2 = s.w2;
+    const r1 = w1 / 5;
+    const r2 = w2 / 5;
+    const ol1 = x1 - w1 - r1;
+    const or1 = x1 + w1 + r1;
+    const ol2 = x2 - w2 - r2;
+    const or2 = x2 + w2 + r2;
+
+    quad(0, y1, ol1, y1, ol2, y2, 0, y2, s.grass);
+    quad(or1, y1, viewW, y1, viewW, y2, or2, y2, s.grass);
+    quad(ol1, y1, x1 - w1, y1, x2 - w2, y2, ol2, y2, s.rumble);
+    quad(or1, y1, x1 + w1, y1, x2 + w2, y2, or2, y2, s.rumble);
+    quad(x1 - w1, y1, x1 + w1, y1, x2 + w2, y2, x2 - w2, y2, s.road);
+    if (s.lane) {
+      const h1 = w1 / 36;
+      const h2 = w2 / 36;
+      quad(x1 - h1, y1, x1 + h1, y1, x2 + h2, y2, x2 - h2, y2, s.lane);
+    }
+  }
+
+  function poly(pts, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0], pts[1]);
+    for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+    ctx.closePath();
+    if (stroke) {
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+    }
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  function drawCar() {
+    const off = Math.abs(playerX) > 1;
+    const sp = speed / maxSpeed;
+    const bob = off ? Math.sin(position * 0.045) * 3.2 * sp : 0;
+    const sc = Math.min(viewW * 0.14, viewH * 0.3) / 160;
+    const lean = wheel;
+    const brakingNow = held.ArrowDown || held.s;
+
+    ctx.save();
+    ctx.translate(viewW / 2 + lean * 24, viewH - 2 + bob);
+    ctx.rotate(lean * 0.07);
+    ctx.scale(sc, sc * (1 - clamp(hillGrade, -0.3, 0.3) * 0.18));
+    ctx.lineJoin = "round";
+
+    ctx.fillStyle = "rgba(0,0,0,0.34)";
+    ctx.beginPath();
+    ctx.ellipse(0, -6, 78, 13, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    function tire(cx) {
+      ctx.fillStyle = "#101114";
+      ctx.beginPath();
+      ctx.roundRect(cx - 15, -48, 30, 42, 5);
+      ctx.fill();
+      ctx.fillStyle = "#2c3036";
+      ctx.fillRect(cx - 15, -42, 7, 30);
+      ctx.fillStyle = "#c8ccd2";
+      ctx.beginPath();
+      ctx.roundRect(cx - 6, -38, 12, 20, 2);
+      ctx.fill();
+    }
+    tire(-60);
+    tire(60);
+
+    poly([-78, -16, 78, -16, 70, -30, -70, -30], "#2a1216", "#14080c");
+    poly([-72, -28, 72, -28, 54, -70, -54, -70], "#e10612", "#14080c");
+    poly([-46, -56, 46, -56, 40, -70, -40, -70], "#ff3b32", null);
+    poly([-34, -70, 34, -70, 22, -94, -22, -94], "#1a2433", "#14080c");
+    poly([-16, -74, 6, -74, 2, -90, -10, -90], "#41597a", null);
+
+    ctx.fillStyle = "#b10e16";
+    ctx.fillRect(-46, -100, 10, 14);
+    ctx.fillRect(36, -100, 10, 14);
+    poly([-60, -106, 60, -106, 60, -96, -60, -96], "#c91018", "#14080c");
+
+    ctx.fillStyle = brakingNow ? "#fff6c2" : "#ffc83a";
+    const lh = brakingNow ? 15 : 11;
+    ctx.beginPath();
+    ctx.roundRect(-68, -48, 28, lh, 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.roundRect(40, -48, 28, lh, 2);
+    ctx.fill();
+    ctx.fillStyle = brakingNow ? "#fff" : "#ffe9a0";
+    ctx.fillRect(-62, -45, 8, 4);
+    ctx.fillRect(46, -45, 8, 4);
+
+    ctx.fillStyle = "#f4e6c2";
+    ctx.fillRect(-16, -44, 32, 14);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(-10, -40, 20, 3);
+    ctx.fillRect(-10, -35, 12, 3);
+
+    ctx.fillStyle = "#161616";
+    ctx.fillRect(-40, -18, 12, 6);
+    ctx.fillRect(28, -18, 12, 6);
+
+    ctx.restore();
+  }
+
+  function drawHud() {
+    const kmh = Math.max(0, Math.round(speed / maxSpeed * 280));
+    const u = clamp(Math.min(viewW / 1280, viewH / 820), 0.55, 1.4);
+    const x = viewW - 26 * u;
+    const y = viewH - 34 * u;
+    const off = Math.abs(playerX) > 1;
+
+    ctx.textAlign = "right";
+    ctx.textBaseline = "alphabetic";
+    ctx.lineJoin = "round";
+    ctx.font = "italic " + Math.round(86 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 8 * u;
+    ctx.strokeStyle = "#1a0708";
+    ctx.strokeText(String(kmh), x, y);
+    ctx.fillStyle = off ? "#ff4a38" : "#ffe14a";
+    ctx.fillText(String(kmh), x, y);
+
+    ctx.font = "italic " + Math.round(22 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 4 * u;
+    ctx.strokeText("KM/H", x, y + 24 * u);
+    ctx.fillStyle = "#ffb03a";
+    ctx.fillText("KM/H", x, y + 24 * u);
+
+    ctx.textAlign = "left";
+    ctx.font = Math.round(18 * u) + "px Impact, 'Arial Black', sans-serif";
+    ctx.lineWidth = 4 * u;
+    const hint = "← →  /  A D      OP GAS      NED BREMSE      R GENSTART";
+    ctx.strokeText(hint, 20 * u, 34 * u);
+    ctx.fillStyle = "#fff1c9";
+    ctx.fillText(hint, 20 * u, 34 * u);
+  }
+
+  function update(dt) {
+    const seg = findSegment(position + playerZ);
+    const sp = speed / maxSpeed;
+    const dx = dt * 2 * sp;
+    const steer = dt * 2 * Math.max(sp, 0.2);
+    const left = held.ArrowLeft || held.a;
+    const right = held.ArrowRight || held.d;
+    const gas = held.ArrowUp || held.w;
+    const brake = held.ArrowDown || held.s;
+
+    position += dt * speed;
+    while (position >= trackLength) position -= trackLength;
+
+    if (left) playerX -= steer;
+    else if (right) playerX += steer;
+    playerX -= dx * sp * seg.curve * CENTRIFUGAL;
+
+    const target = (right ? 1 : 0) - (left ? 1 : 0);
+    wheel += (target - wheel) * Math.min(1, dt * 10);
+
+    hillGrade = (seg.p2.world.y - seg.p1.world.y) / SEG;
+    let cap = maxSpeed;
+    if (hillGrade > 0) cap = maxSpeed / (1 + hillGrade * 2.2);
+    else cap = maxSpeed * (1 + Math.min(0.14, -hillGrade * 0.4));
+
+    if (gas) speed += accel * dt;
+    else if (brake) speed += braking * dt;
+    else speed += decel * dt;
+
+    const off = Math.abs(playerX) > 1;
+    if (off && speed > offRoadLimit) speed += offRoadDecel * dt;
+    if (hillGrade < 0 && !brake && !off) speed += (-hillGrade) * maxSpeed * 0.4 * dt;
+    if (speed > cap) speed = Math.max(cap, speed - maxSpeed * 0.75 * dt);
+
+    playerX = clamp(playerX, -2, 2);
+    if (speed < 0) speed = 0;
+  }
+
+  function render() {
+    const base = findSegment(position);
+    const basePercent = segPercent(position);
+    const playerSeg = findSegment(position + playerZ);
+    const playerPercent = segPercent(position + playerZ);
+    const playerY = lerp(playerSeg.p1.world.y, playerSeg.p2.world.y, playerPercent);
+    const nSeg = segments.length;
+
+    ctx.fillStyle = skyGrad;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    let maxY = viewH;
+    let x = 0;
+    let dx = -(base.curve * basePercent) * CURVE_SCALE;
+    const spans = [];
+
+    for (let n = 0; n < DRAW; n++) {
+      const seg = segments[(base.index + n) % nSeg];
+      const looped = seg.index < base.index;
+      const camZ = position - (looped ? trackLength : 0);
+
+      project(seg.p1, playerX * ROAD_W - x, playerY + CAM_H, camZ);
+      project(seg.p2, playerX * ROAD_W - x - dx, playerY + CAM_H, camZ);
+
+      x += dx;
+      dx += seg.curve * CURVE_SCALE;
+
+      if (seg.p1.camera.z <= camDepth ||
+          seg.p2.screen.y >= seg.p1.screen.y ||
+          seg.p2.screen.y >= maxY) continue;
+
+      const col = seg.dark ? PAL.dark : PAL.light;
+      const grade = (seg.p2.world.y - seg.p1.world.y) / SEG;
+      spans.push({
+        grass: col.grass,
+        rumble: col.rumble,
+        lane: col.lane,
+        road: shadeRoad(seg.dark, grade),
+        x1: seg.p1.screen.x,
+        y1: seg.p1.screen.y,
+        w1: seg.p1.screen.w,
+        x2: seg.p2.screen.x,
+        y2: seg.p2.screen.y,
+        w2: seg.p2.screen.w
+      });
+      maxY = seg.p2.screen.y;
+    }
+
+    for (let i = spans.length - 1; i >= 0; i--) drawSeg(spans[i]);
+
+    drawCar();
+    drawHud();
+  }
+
+  function restart() {
+    position = 0;
+    speed = 0;
+    playerX = 0;
+    wheel = 0;
+    hillGrade = 0;
+  }
+
+  function resize() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    viewW = Math.max(2, window.innerWidth);
+    viewH = Math.max(2, window.innerHeight);
+    canvas.width = Math.floor(viewW * dpr);
+    canvas.height = Math.floor(viewH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    skyGrad = ctx.createLinearGradient(0, 0, 0, viewH);
+    skyGrad.addColorStop(0, "#062f86");
+    skyGrad.addColorStop(0.28, "#1a78c8");
+    skyGrad.addColorStop(HORIZON, FOG);
+    skyGrad.addColorStop(1, FOG);
+  }
+
+  function normKey(k) {
+    return k.length === 1 ? k.toLowerCase() : k;
+  }
+
+  window.addEventListener("keydown", function (e) {
+    const k = normKey(e.key);
+    if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight")
+      e.preventDefault();
+    if (k === "r") {
+      if (!held.r) restart();
+      held.r = true;
+      return;
+    }
+    held[k] = true;
+  }, { passive: false });
+
+  window.addEventListener("keyup", function (e) {
+    held[normKey(e.key)] = false;
+  });
+
+  window.addEventListener("blur", function () {
+    for (const k in held) held[k] = false;
+  });
+
+  window.addEventListener("resize", resize);
+
+  buildTrack();
+  resize();
+
+  let last = performance.now();
+  let acc = 0;
+  const STEP = 1 / 60;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.1) dt = 0.1;
+    if (dt < 0) dt = 0;
+    acc += dt;
+    while (acc >= STEP) {
+      update(STEP);
+      acc -= STEP;
+    }
+    render();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
