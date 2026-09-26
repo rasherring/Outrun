@@ -139,7 +139,7 @@
   let horizonScroll = 0;
   let viewW = 1;
   let viewH = 1;
-  let phase = "ready";
+  let phase = "title";
   let timeLeft = RACE_SECS;
   let countLeft = 0;
   let nextSpriteId = 1;
@@ -804,7 +804,89 @@
     }
   }
 
+  function drawTitleSprite(sp, cx, footY, maxW, maxH) {
+    const img = sp.img;
+    if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
+    let dh = maxH;
+    let dw = dh * sp.w / sp.h;
+    if (dw > maxW) {
+      dw = maxW;
+      dh = dw * sp.h / sp.w;
+    }
+    ctx.drawImage(img, sp.x, sp.y, sp.w, sp.h, cx - dw / 2, footY - dh, dw, dh);
+  }
+
+  function drawTitle() {
+    const sky = ctx.createLinearGradient(0, 0, 0, viewH);
+    sky.addColorStop(0, "rgb(214,248,255)");
+    sky.addColorStop(0.28, "rgb(46,168,236)");
+    sky.addColorStop(0.62, "rgb(14,72,176)");
+    sky.addColorStop(1, "rgb(6,20,72)");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    const footY = viewH * 0.74;
+    ctx.fillStyle = "#12962c";
+    ctx.fillRect(0, footY, viewW, viewH - footY);
+    ctx.fillStyle = "#22c240";
+    ctx.fillRect(0, footY, viewW, Math.max(6, viewH * 0.018));
+
+    const padW = Math.min(viewW * 0.92, viewW - 24);
+    const padH = Math.max(18, viewH * 0.045);
+    const padX = (viewW - padW) / 2;
+    const padY = footY - padH * 0.35;
+    ctx.fillStyle = "#555a68";
+    ctx.fillRect(padX, padY, padW, padH);
+    ctx.fillStyle = "#848894";
+    ctx.fillRect(padX, padY, padW, Math.max(3, padH * 0.22));
+
+    const u = clamp(Math.min(viewW / 1280, viewH / 820), 0.55, 1.4);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1a0708";
+
+    const title = "OUTRUN";
+    let size = Math.round(96 * u);
+    ctx.font = "italic " + size + "px Impact, 'Arial Black', sans-serif";
+    const maxText = viewW * 0.88;
+    while (size > 32 && ctx.measureText(title).width > maxText) {
+      size -= 4;
+      ctx.font = "italic " + size + "px Impact, 'Arial Black', sans-serif";
+    }
+    ctx.lineWidth = Math.max(4, size * 0.08);
+    const titleY = viewH * 0.15;
+    ctx.strokeText(title, viewW / 2, titleY);
+    ctx.fillStyle = "#ffe14a";
+    ctx.fillText(title, viewW / 2, titleY);
+
+    const cars = [SPRITES.player, SPRITES.cars[0], SPRITES.cars[1], SPRITES.cars[2]];
+    const slot = viewW / cars.length;
+    const maxH = Math.max(120, footY - titleY - 40 * u);
+    const maxW = slot * 0.84;
+    for (let i = 0; i < cars.length; i++) {
+      drawTitleSprite(cars[i], slot * (i + 0.5), footY, maxW, maxH);
+    }
+
+    const prompt = "Space for at starte";
+    let ps = Math.round(34 * u);
+    ctx.font = ps + "px Impact, 'Arial Black', sans-serif";
+    while (ps > 16 && ctx.measureText(prompt).width > maxText) {
+      ps -= 2;
+      ctx.font = ps + "px Impact, 'Arial Black', sans-serif";
+    }
+    ctx.lineWidth = Math.max(3, 5 * u);
+    const py = footY + (viewH - footY) * 0.52;
+    ctx.strokeText(prompt, viewW / 2, py);
+    ctx.fillStyle = "#fff1c9";
+    ctx.fillText(prompt, viewW / 2, py);
+  }
+
   function render() {
+    if (phase === "title") {
+      drawTitle();
+      return;
+    }
     const base = findSegment(position);
     const basePercent = segPercent(position);
     const playerSeg = findSegment(position + playerZ);
@@ -1095,6 +1177,11 @@
     phase = "ready";
   }
 
+  function showTitle() {
+    resetRun();
+    phase = "title";
+  }
+
   function beginCountdown() {
     resetRun();
     countLeft = COUNT_SECS;
@@ -1250,12 +1337,15 @@
     if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight" || k === " " || k === "Spacebar")
       e.preventDefault();
     if (k === "r") {
-      if (!held.r) restart();
+      if (!held.r) {
+        if (phase === "goal" || phase === "fail") showTitle();
+        else if (phase !== "title") restart();
+      }
       held.r = true;
       return;
     }
     if (k === " " || k === "Spacebar") {
-      if (!held[" "] && phase === "ready") beginCountdown();
+      if (!held[" "] && (phase === "title" || phase === "ready")) beginCountdown();
       held[" "] = true;
       return;
     }
