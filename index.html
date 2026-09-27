@@ -105,13 +105,14 @@
   const SKY_PERIOD = 20;
   const COUNT_SECS = 3;
 
+  const SKY_STOPS = [
+    [214, 248, 255],
+    [46, 168, 236],
+    [14, 72, 176],
+    [6, 20, 72]
+  ];
   const SKY_BANDS = (function () {
-    const stops = [
-      [214, 248, 255],
-      [46, 168, 236],
-      [14, 72, 176],
-      [6, 20, 72]
-    ];
+    const stops = SKY_STOPS;
     const steps = 40;
     const bands = [];
     for (let i = 0; i < steps; i++) {
@@ -135,6 +136,11 @@
   const PAL = {
     light: { road: "#848894", grass: "#22c240", rumble: "#f6f1e4", lane: "#fff3c2" },
     dark:  { road: "#555a68", grass: "#12962c", rumble: "#d10e18", lane: null }
+  };
+  const GRASS_BLEND = SEG * 64;
+  const GRASS_RGB = {
+    light: [[34, 194, 64], [18, 92, 40]],
+    dark: [[18, 150, 44], [10, 60, 24]]
   };
   const ROAD_RGB = {
     light: [132, 136, 148],
@@ -160,6 +166,7 @@
   let phase = "title";
   let stage = 1;
   let skyCycle = 0;
+  let grassAge = 0;
   let timeLeft = RACE_SECS;
   let countLeft = 0;
   let nextSpriteId = 1;
@@ -539,6 +546,30 @@
     ctx.fill();
   }
 
+  function blendT(z) {
+    if (stage < 2) return 0;
+    const u = clamp(z / GRASS_BLEND, 0, 1);
+    return u * u * (3 - 2 * u);
+  }
+
+  function grassFade() {
+    if (stage < 2) return 0;
+    const u = clamp(grassAge / 5, 0, 1);
+    return u * u * (3 - 2 * u);
+  }
+
+  function grassColor(dark, t) {
+    if (t <= 0) return dark ? PAL.dark.grass : PAL.light.grass;
+    if (t >= 1) return dark ? "#0a3c18" : "#125c28";
+    const pair = dark ? GRASS_RGB.dark : GRASS_RGB.light;
+    const a = pair[0];
+    const b = pair[1];
+    return "rgb(" +
+      Math.round(a[0] + (b[0] - a[0]) * t) + "," +
+      Math.round(a[1] + (b[1] - a[1]) * t) + "," +
+      Math.round(a[2] + (b[2] - a[2]) * t) + ")";
+  }
+
   function shadeRoad(dark, grade) {
     const base = dark ? ROAD_RGB.dark : ROAD_RGB.light;
     const g = clamp(grade / 0.22, -1, 1);
@@ -853,6 +884,8 @@
     }
     if (phase !== "race") return;
 
+    if (stage >= 2 && grassAge < 5) grassAge += dt;
+
     updateTraffic(dt);
 
     const seg = findSegment(position + playerZ);
@@ -1076,7 +1109,7 @@
         const col = seg.dark ? PAL.dark : PAL.light;
         const grade = (seg.p2.world.y - seg.p1.world.y) / SEG;
         span = {
-          grass: stage < 2 ? col.grass : (seg.dark ? "#0a3c18" : "#125c28"),
+          grass: grassColor(seg.dark, grassFade()),
           rumble: col.rumble,
           lane: col.lane,
           road: shadeRoad(seg.dark, grade),
@@ -1300,7 +1333,11 @@
     const i0 = Math.floor(u) % laps;
     const frac = u - Math.floor(u);
     const s = frac * frac * (3 - 2 * frac);
-    return rasterBands(mixStops(SKY_CYCLE[i0], SKY_CYCLE[(i0 + 1) % laps], s));
+    const cycle = mixStops(SKY_CYCLE[i0], SKY_CYCLE[(i0 + 1) % laps], s);
+    const t = blendT(position);
+    if (t >= 1) return rasterBands(cycle);
+    if (t <= 0) return SKY_BANDS;
+    return rasterBands(mixStops(SKY_STOPS, cycle, t));
   }
 
   function drawSky() {
@@ -1348,6 +1385,7 @@
     const keepRecover = recover;
     stage = 2;
     skyCycle = 0;
+    grassAge = 0;
     buildCourse(2);
     position = 0;
     prevPosition = 0;
