@@ -7,15 +7,19 @@
 <style>
   html, body {
     margin: 0;
+    width: 100%;
     height: 100%;
     overflow: hidden;
     background: #081e60;
     user-select: none;
   }
   canvas {
+    position: fixed;
+    left: 0;
+    top: 0;
     display: block;
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
     background: #081e60;
   }
   #crt {
@@ -168,6 +172,9 @@
   let muted = false;
   let bumping = false;
   let bumpGain = null;
+  let extraGain = null;
+  let rumble = null;
+  let goalChimed = false;
   let rpm = 0.18;
   let engineVol = 0;
   const held = {};
@@ -1194,7 +1201,20 @@
     viewH = Math.max(2, window.innerHeight);
     canvas.width = Math.floor(viewW * dpr);
     canvas.height = Math.floor(viewH * dpr);
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function toggleFullscreen() {
+    const active = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!active) {
+      const req = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+      if (req) req.call(document.documentElement);
+    } else {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) exit.call(document);
+    }
   }
 
   function normKey(k) {
@@ -1323,13 +1343,121 @@
     src.stop(t + 0.08);
   }
 
+  function ensureExtra() {
+    if (!audioCtx || extraGain) return;
+    extraGain = audioCtx.createGain();
+    extraGain.gain.value = muted ? 0 : 1;
+    extraGain.connect(audioCtx.destination);
+  }
+
+  function stripeKnock(z) {
+    const span = SEG * RUMBLE;
+    let m = z % span;
+    if (m < 0) m += span;
+    const s = Math.sin((m / span) * Math.PI);
+    const k = s * s;
+    return k * k;
+  }
+
+  function ensureRumble() {
+    if (rumble || !audioCtx || !extraGain) return;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const bodyF = audioCtx.createBiquadFilter();
+    bodyF.type = "bandpass";
+    bodyF.frequency.value = 110;
+    bodyF.Q.value = 0.8;
+    const bodyG = audioCtx.createGain();
+    bodyG.gain.value = 0;
+    const tickF = audioCtx.createBiquadFilter();
+    tickF.type = "highpass";
+    tickF.frequency.value = 900;
+    const tickG = audioCtx.createGain();
+    tickG.gain.value = 0;
+    src.connect(bodyF);
+    bodyF.connect(bodyG);
+    bodyG.connect(extraGain);
+    src.connect(tickF);
+    tickF.connect(tickG);
+    tickG.connect(extraGain);
+    src.start();
+    rumble = { bodyF: bodyF, bodyG: bodyG, tickG: tickG, mix: 0 };
+  }
+
+  function updateRumble(dt) {
+    if (!audioCtx) return;
+    const ax = Math.abs(playerX);
+    const on = phase === "race" && !muted && speed > maxSpeed * 0.04 && ax >= 1 && ax <= 1.2;
+    if (!rumble) {
+      if (!on) return;
+      ensureExtra();
+      ensureRumble();
+      if (!rumble) return;
+    }
+    const sp = clamp(speed / maxSpeed, 0, 1);
+    const knock = stripeKnock(position);
+    rumble.mix += ((on ? 1 : 0) - rumble.mix) * (1 - Math.exp(-dt * 16));
+    const bodyTarget = rumble.mix * (0.035 + sp * 0.05) * (0.4 + 0.6 * knock);
+    const tickTarget = rumble.mix * knock * (0.07 + sp * 0.12);
+    rumble.bodyG.gain.value += (bodyTarget - rumble.bodyG.gain.value) * (1 - Math.exp(-dt * 18));
+    rumble.tickG.gain.value = tickTarget;
+    rumble.bodyF.frequency.value = 90 + sp * 50;
+  }
+
+  function fanNote(freq, start, dur, peak) {
+    const osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.exponentialRampToValueAtTime(peak, start + 0.018);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    osc.connect(g);
+    g.connect(extraGain);
+    osc.start(start);
+    osc.stop(start + dur + 0.02);
+  }
+
+  function playFanfare() {
+    ensureAudio();
+    if (!audioCtx || muted) return;
+    ensureExtra();
+    const t = audioCtx.currentTime;
+    const lead = [523.25, 659.25, 783.99];
+    for (let i = 0; i < lead.length; i++) fanNote(lead[i], t + i * 0.08, 0.2, 0.12);
+    const chord = [523.25, 659.25, 783.99, 1046.5];
+    for (let i = 0; i < chord.length; i++) fanNote(chord[i], t + 0.26, 0.34, 0.05);
+  }
+
+  function updateDriveSfx(dt) {
+    if (phase === "goal") {
+      if (!goalChimed) {
+        goalChimed = true;
+        playFanfare();
+      }
+    } else {
+      goalChimed = false;
+    }
+    updateRumble(dt);
+  }
+
   window.addEventListener("keydown", function (e) {
     const k = normKey(e.key);
     ensureAudio();
+    if (k === "f") {
+      if (!held.f) toggleFullscreen();
+      held.f = true;
+      return;
+    }
     if (k === "m") {
       if (!held.m) {
         muted = !muted;
         if (bumpGain) bumpGain.gain.value = muted ? 0 : 1;
+        if (extraGain) extraGain.gain.value = muted ? 0 : 1;
       }
       held.m = true;
       return;
@@ -1361,6 +1489,8 @@
   });
 
   window.addEventListener("resize", resize);
+  document.addEventListener("fullscreenchange", resize);
+  document.addEventListener("webkitfullscreenchange", resize);
 
   buildTrack();
   resize();
@@ -1380,6 +1510,7 @@
       acc -= STEP;
     }
     updateEngine(dt);
+    updateDriveSfx(dt);
     render();
     requestAnimationFrame(frame);
   }
