@@ -101,7 +101,9 @@
   const decel = -maxSpeed / 5;
   const offRoadDecel = -maxSpeed / 2;
   const offRoadLimit = maxSpeed / 4;
-  const RACE_SECS = 85;
+  const grassDecel = -maxSpeed * 1.5;
+  const grassLimit = maxSpeed / 10;
+  const RACE_SECS = 80;
   const COUNT_SECS = 3;
 
   const SKY_STOPS = [
@@ -1016,8 +1018,11 @@
     else if (brake) speed += braking * dt;
     else speed += decel * dt;
 
-    const off = Math.abs(playerX) > 1;
-    if (off && speed > offRoadLimit) speed += offRoadDecel * dt;
+    const ax = Math.abs(playerX);
+    const off = ax > 1;
+    if (ax > 1.2) {
+      if (speed > grassLimit) speed += grassDecel * dt;
+    } else if (off && speed > offRoadLimit) speed += offRoadDecel * dt;
     if (hillGrade < 0 && !brake && !off && recover <= 0) speed += (-hillGrade) * maxSpeed * 0.4 * dt;
     if (speed > cap) speed = Math.max(cap, speed - maxSpeed * 0.75 * dt);
 
@@ -1483,7 +1488,7 @@
     speed = keepSpeed;
     wheel = keepWheel;
     recover = keepRecover;
-    timeLeft = RACE_SECS;
+    timeLeft = RACE_SECS - 5;
     phase = "race";
     playFanfare();
   }
@@ -1503,7 +1508,7 @@
     speed = keepSpeed;
     wheel = keepWheel;
     recover = keepRecover;
-    timeLeft = RACE_SECS;
+    timeLeft = RACE_SECS - 7;
     phase = "race";
     playFanfare();
   }
