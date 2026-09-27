@@ -7,6 +7,7 @@
 <style>
   html, body {
     margin: 0;
+    padding: 0;
     width: 100%;
     height: 100%;
     overflow: hidden;
@@ -18,13 +19,17 @@
     left: 0;
     top: 0;
     display: block;
-    width: 100%;
-    height: 100%;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    border: 0;
     background: #081e60;
   }
   #crt {
     position: fixed;
     inset: 0;
+    width: 100vw;
+    height: 100vh;
     pointer-events: none;
     background: repeating-linear-gradient(
       to bottom,
@@ -138,6 +143,8 @@
   let speed = 0;
   let recover = 0;
   let playerX = 0;
+  let prevPosition = 0;
+  let prevPlayerX = 0;
   let wheel = 0;
   let hillGrade = 0;
   let horizonScroll = 0;
@@ -165,7 +172,6 @@
     billboard: { img: loadSprite("billboard.png"), x: 79, y: 203, w: 998, h: 1449 }
   };
   const CAR_HALF = 0.084;
-  const CAR_HIT = 0.126;
   const CAR_GAP = SEG * 48;
   let audioCtx = null;
   let engine = null;
@@ -302,7 +308,9 @@
       amp: amp,
       phase0: phase,
       phase: phase,
-      gone: false
+      gone: false,
+      prevZ: seg.p1.world.z,
+      prevOffset: offset
     });
   }
 
@@ -383,32 +391,72 @@
       car.phase = car.phase0;
       car.offset = clamp(car.lane + Math.sin(car.phase) * car.amp, -limit, limit);
       car.gone = false;
+      car.prevZ = car.z;
+      car.prevOffset = car.offset;
       settleCar(car);
     }
   }
 
+  function sweepHits(x0, z0, x1, z1, hx, zLo, zHi) {
+    let t0 = 0;
+    let t1 = 1;
+    function clip(p, d, lo, hi) {
+      if (Math.abs(d) < 1e-9) return p >= lo && p <= hi;
+      let a = (lo - p) / d;
+      let b = (hi - p) / d;
+      if (a > b) {
+        const s = a;
+        a = b;
+        b = s;
+      }
+      if (a > t0) t0 = a;
+      if (b < t1) t1 = b;
+      return t0 <= t1;
+    }
+    return clip(x0, x1 - x0, -hx, hx) && clip(z0, z1 - z0, zLo, zHi) && t1 >= 0 && t0 <= 1;
+  }
+
   function resolveTraffic() {
     const nose = position + playerZ;
+    const nose0 = prevPosition + playerZ;
+    const laneScale = ROAD_W / ROAD_DRAW_W;
+    const hx = CAR_HALF * (1 + laneScale);
+    const zLo = -SEG * 1.25;
+    const zHi = SEG * 1.5;
     const holdGap = SEG * 0.4;
-    const brakeGap = SEG * 1.5;
+    const maxStep = maxSpeed / 60 + 2;
     let hit = false;
     for (let i = 0; i < traffic.length; i++) {
       const car = traffic[i];
       if (car.gone) continue;
-      if (Math.abs(playerX - car.offset) > CAR_HIT) continue;
-      const ahead = car.z - nose;
-      if (ahead > brakeGap || ahead < -SEG * 1.25) continue;
+      const x0 = prevPlayerX - car.prevOffset * laneScale;
+      const x1 = playerX - car.offset * laneScale;
+      const z0 = car.prevZ - nose0;
+      const z1 = car.z - nose;
+      const jumped = Math.abs(car.z - car.prevZ) > maxStep;
+      const struck = jumped
+        ? (Math.abs(x1) <= hx && z1 >= zLo && z1 <= zHi) ||
+          (Math.abs(x0) <= hx && z0 >= zLo && z0 <= zHi)
+        : sweepHits(x0, z0, x1, z1, hx, zLo, zHi);
+      if (!struck) continue;
       hit = true;
       const crawl = maxSpeed * 0.04;
       if (speed > crawl) speed = crawl;
       recover = 4.5;
-      if (ahead < holdGap) {
+      if (z1 < holdGap) {
         const holdPos = car.z - playerZ - holdGap;
         if (position > holdPos) position = holdPos > 0 ? holdPos : 0;
       }
     }
     if (hit && !bumping) playBump();
     bumping = hit;
+    prevPosition = position;
+    prevPlayerX = playerX;
+    for (let i = 0; i < traffic.length; i++) {
+      const car = traffic[i];
+      car.prevZ = car.z;
+      car.prevOffset = car.offset;
+    }
   }
 
   function findSegment(z) {
@@ -607,6 +655,11 @@
     car.lineU = lineU;
     car.hidden = hidden;
     return car;
+  }
+
+  function paintQueued(sp) {
+    if (sp.kind === "car") drawTrafficCar(sp);
+    else drawRoadside(sp);
   }
 
   function drawTrafficCar(sp) {
@@ -909,7 +962,6 @@
     let dx = -(base.curve * basePercent) * CURVE_SCALE;
     const layers = [];
     let sawRoad = false;
-    let gate = null;
     spriteStamp++;
     const carBucket = new Array(nSeg);
     for (let c = 0; c < traffic.length; c++) {
@@ -931,8 +983,14 @@
 
       project(seg.p1, camX, camY, camZ);
       project(seg.p2, camX - dx, camY, camZ);
+      let gateHere = null;
       if (!looped && seg.index === nSeg - 1 && seg.p2.camera.z > 1 && seg.p2.screen.w > 1) {
-        gate = { x: seg.p2.screen.x, y: seg.p2.screen.y, w: seg.p2.screen.w };
+        gateHere = {
+          x: seg.p2.screen.x,
+          y: seg.p2.screen.y,
+          w: seg.p2.screen.w,
+          cz: seg.p2.camera.z
+        };
       }
 
       const y1u = projectSpriteY(seg.p1.world.y, seg.p1.world.z - camZ, camY);
@@ -987,7 +1045,7 @@
         sawRoad = true;
       }
 
-      if (span || sprites.length) layers.push({ span: span, sprites: sprites });
+      if (span || sprites.length || gateHere) layers.push({ span: span, sprites: sprites, gate: gateHere });
     }
 
     drawHorizon(sawRoad ? maxY : viewH * HORIZON);
@@ -999,13 +1057,19 @@
         if (layer.span.finish) drawFinish(layer.span);
       }
       const list = layer.sprites;
+      const gz = layer.gate ? layer.gate.cz : null;
+      if (gz !== null) {
+        for (let s = 0; s < list.length; s++) {
+          if (list[s].cz > gz) paintQueued(list[s]);
+        }
+        drawGate(layer.gate);
+      }
       for (let s = 0; s < list.length; s++) {
-        if (list[s].kind === "car") drawTrafficCar(list[s]);
-        else drawRoadside(list[s]);
+        if (gz !== null && list[s].cz > gz) continue;
+        paintQueued(list[s]);
       }
     }
 
-    if (gate) drawGate(gate);
     drawCar();
     drawHud();
     drawBanner();
@@ -1171,6 +1235,8 @@
     speed = 0;
     recover = 0;
     playerX = 0;
+    prevPosition = 0;
+    prevPlayerX = 0;
     wheel = 0;
     hillGrade = 0;
     horizonScroll = 0;
@@ -1201,8 +1267,10 @@
     viewH = Math.max(2, window.innerHeight);
     canvas.width = Math.floor(viewW * dpr);
     canvas.height = Math.floor(viewH * dpr);
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
+    canvas.style.left = "0";
+    canvas.style.top = "0";
+    canvas.style.width = viewW + "px";
+    canvas.style.height = viewH + "px";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
@@ -1215,6 +1283,15 @@
       const exit = document.exitFullscreen || document.webkitExitFullscreen;
       if (exit) exit.call(document);
     }
+  }
+
+  function enterFullscreen() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return;
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!req) return;
+    const pending = req.call(el);
+    if (pending && pending.catch) pending.catch(function () {});
   }
 
   function normKey(k) {
@@ -1448,6 +1525,13 @@
   window.addEventListener("keydown", function (e) {
     const k = normKey(e.key);
     ensureAudio();
+    if (k === "Escape") {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) exit.call(document);
+      }
+      return;
+    }
     if (k === "f") {
       if (!held.f) toggleFullscreen();
       held.f = true;
@@ -1473,6 +1557,7 @@
       return;
     }
     if (k === " " || k === "Spacebar") {
+      enterFullscreen();
       if (!held[" "] && (phase === "title" || phase === "ready")) beginCountdown();
       held[" "] = true;
       return;
@@ -1486,6 +1571,11 @@
 
   window.addEventListener("blur", function () {
     for (const k in held) held[k] = false;
+  });
+
+  window.addEventListener("click", function onFirstClick() {
+    window.removeEventListener("click", onFirstClick);
+    enterFullscreen();
   });
 
   window.addEventListener("resize", resize);
