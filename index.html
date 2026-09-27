@@ -101,8 +101,7 @@
   const decel = -maxSpeed / 5;
   const offRoadDecel = -maxSpeed / 2;
   const offRoadLimit = maxSpeed / 4;
-  const RACE_SECS = 90;
-  const SKY_PERIOD = 20;
+  const RACE_SECS = 85;
   const COUNT_SECS = 3;
 
   const SKY_STOPS = [
@@ -127,11 +126,17 @@
     }
     return bands;
   })();
-  const SKY_CYCLE = [
-    [[96, 150, 196], [28, 86, 160], [10, 40, 112], [3, 12, 48]],
-    [[52, 96, 160], [16, 52, 124], [6, 24, 84], [2, 6, 28]],
-    [[28, 56, 112], [10, 30, 84], [4, 14, 52], [1, 3, 16]],
-    [[70, 118, 176], [20, 68, 142], [8, 32, 100], [2, 8, 36]]
+  const SKY_GRAY = [
+    [104, 106, 108],
+    [68, 70, 72],
+    [38, 40, 42],
+    [16, 16, 18]
+  ];
+  const SKY_DUSK = [
+    [156, 128, 32],
+    [108, 84, 16],
+    [62, 46, 8],
+    [26, 18, 4]
   ];
   const PAL = {
     light: { road: "#848894", grass: "#22c240", rumble: "#f6f1e4", lane: "#fff3c2" },
@@ -139,8 +144,8 @@
   };
   const GRASS_BLEND = SEG * 64;
   const GRASS_RGB = {
-    light: [[34, 194, 64], [18, 92, 40]],
-    dark: [[18, 150, 44], [10, 60, 24]]
+    light: [[34, 194, 64], [92, 34, 124], [74, 44, 20]],
+    dark: [[18, 150, 44], [42, 14, 58], [36, 20, 10]]
   };
   const ROAD_RGB = {
     light: [132, 136, 148],
@@ -165,7 +170,6 @@
   let viewH = 1;
   let phase = "title";
   let stage = 1;
-  let skyCycle = 0;
   let grassAge = 0;
   let timeLeft = RACE_SECS;
   let countLeft = 0;
@@ -177,6 +181,47 @@
     img.src = src;
     return img;
   }
+  function sealCar(img) {
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    const c = document.createElement("canvas");
+    c.width = iw;
+    c.height = ih;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0);
+    const image = g.getImageData(0, 0, iw, ih);
+    const px = image.data;
+    const n = iw * ih;
+    const bg = new Uint8Array(n);
+    const stack = new Int32Array(n);
+    let top = 0;
+    function push(i) {
+      if (i < 0 || i >= n || bg[i] || px[i * 4 + 3] > 32) return;
+      bg[i] = 1;
+      stack[top++] = i;
+    }
+    for (let x = 0; x < iw; x++) {
+      push(x);
+      push((ih - 1) * iw + x);
+    }
+    for (let y = 0; y < ih; y++) {
+      push(y * iw);
+      push(y * iw + iw - 1);
+    }
+    while (top) {
+      const i = stack[--top];
+      const x = i % iw;
+      if (x > 0) push(i - 1);
+      if (x + 1 < iw) push(i + 1);
+      if (i >= iw) push(i - iw);
+      if (i + iw < n) push(i + iw);
+    }
+    for (let i = 0; i < n; i++) {
+      if (!bg[i]) px[i * 4 + 3] = 255;
+    }
+    g.putImageData(image, 0, 0);
+    return c;
+  }
   const SPRITES = {
     player: { img: loadSprite("player.png"), x: 33, y: 694, w: 987, h: 850 },
     cars: [
@@ -187,6 +232,19 @@
     sign: { img: loadSprite("sign.png"), x: 320, y: 1, w: 446, h: 1722 },
     billboard: { img: loadSprite("billboard.png"), x: 79, y: 203, w: 998, h: 1449 }
   };
+  (function sealCarSprites() {
+    const list = [SPRITES.player, SPRITES.cars[0], SPRITES.cars[1], SPRITES.cars[2]];
+    for (let s = 0; s < list.length; s++) {
+      const sp = list[s];
+      const img = sp.img;
+      function apply() {
+        if (!img.naturalWidth) return;
+        sp.img = sealCar(img);
+      }
+      if (img.complete && img.naturalWidth) apply();
+      else img.addEventListener("load", apply);
+    }
+  })();
   const CAR_HALF = 0.084;
   const CAR_GAP = SEG * 48;
   let audioCtx = null;
@@ -296,9 +354,34 @@
     addRoad(48, 150, 48, 0, 0);
   }
 
+  function layCourse3() {
+    addRoad(30, 50, 30, 0, 0);
+    addRoad(44, 180, 44, -3.4, 10);
+    addRoad(22, 32, 22, 5.6, -6);
+    addRoad(40, 80, 40, 2.2, 36);
+    addRoad(48, 40, 48, -1.4, 8);
+    addRoad(30, 50, 30, -5.2, -28);
+    addRoad(40, 130, 40, 2.8, -12);
+    addRoad(28, 44, 28, -4.6, 22);
+    addRoad(34, 90, 34, 4.2, 6);
+    addRoad(22, 32, 22, -5.4, -18);
+    addRoad(50, 100, 50, 1.2, 30);
+    addRoad(26, 48, 26, 4.8, 0);
+    addRoad(42, 80, 42, -3.0, -34);
+    addRoad(32, 60, 32, 3.6, 16);
+    addRoad(38, 110, 38, -2.4, 8);
+    addRoad(24, 40, 24, 5.0, -14);
+    addRoad(46, 70, 46, -4.0, 18);
+    addRoad(30, 90, 30, 2.0, -10);
+    addRoad(36, 44, 36, 0, -8);
+    closeHill();
+    addRoad(46, 160, 46, 0, 0);
+  }
+
   function buildCourse(which) {
     segments = [];
-    if (which === 2) layCourse2();
+    if (which === 3) layCourse3();
+    else if (which === 2) layCourse2();
     else layCourse1();
     trackLength = segments.length * SEG;
     placeSprites();
@@ -413,12 +496,11 @@
     for (let i = 0; i < traffic.length; i++) {
       const car = traffic[i];
       if (car.gone) continue;
-      if (car.z <= position) {
+      car.z += car.speed * dt;
+      if (car.z >= trackLength) {
         car.gone = true;
         continue;
       }
-      car.z += car.speed * dt;
-      if (car.z > trackLength - 1) car.z = trackLength - 1;
       car.phase += car.weave * dt;
       car.offset = clamp(car.lane + Math.sin(car.phase) * car.amp, -limit, limit);
     }
@@ -559,11 +641,12 @@
   }
 
   function grassColor(dark, t) {
-    if (t <= 0) return dark ? PAL.dark.grass : PAL.light.grass;
-    if (t >= 1) return dark ? "#0a3c18" : "#125c28";
     const pair = dark ? GRASS_RGB.dark : GRASS_RGB.light;
-    const a = pair[0];
-    const b = pair[1];
+    const i = stage >= 3 ? 1 : 0;
+    const a = pair[i];
+    const b = pair[i + 1];
+    if (stage < 2 || t <= 0) return "rgb(" + a[0] + "," + a[1] + "," + a[2] + ")";
+    if (t >= 1) return "rgb(" + b[0] + "," + b[1] + "," + b[2] + ")";
     return "rgb(" +
       Math.round(a[0] + (b[0] - a[0]) * t) + "," +
       Math.round(a[1] + (b[1] - a[1]) * t) + "," +
@@ -755,9 +838,10 @@
 
   function drawSprite(sp, size, byHeight) {
     const img = sp.img;
-    if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
-    const iw = img.naturalWidth;
-    const ih = img.naturalHeight;
+    if (!img || (img instanceof HTMLImageElement && !img.complete)) return;
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return;
     const dw = byHeight ? size * iw / sp.h : size * iw / sp.w;
     const dh = dw * ih / iw;
     ctx.drawImage(
@@ -904,6 +988,10 @@
         enterLevel2();
         return;
       }
+      if (stage < 3) {
+        enterLevel3();
+        return;
+      }
       position = 0;
       speed = 0;
       phase = "goal";
@@ -947,7 +1035,10 @@
 
   function drawTitleSprite(sp, cx, footY, maxW, maxH) {
     const img = sp.img;
-    if (!img.complete || !img.naturalWidth || !img.naturalHeight) return;
+    if (!img || (img instanceof HTMLImageElement && !img.complete)) return;
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return;
     let dh = maxH;
     let dw = dh * sp.w / sp.h;
     if (dw > maxW) {
@@ -1047,7 +1138,7 @@
     const carBucket = new Array(nSeg);
     for (let c = 0; c < traffic.length; c++) {
       const car = traffic[c];
-      if (car.gone || car.z <= position) continue;
+      if (car.gone) continue;
       const z = car.z >= trackLength ? trackLength - 1 : car.z;
       const idx = Math.floor(z / SEG);
       if (idx < 0 || idx >= nSeg) continue;
@@ -1071,7 +1162,7 @@
           y: seg.p2.screen.y,
           w: seg.p2.screen.w,
           cz: seg.p2.camera.z,
-          label: stage < 2 ? "LEVEL 2" : "FINISH"
+          label: stage < 2 ? "LEVEL 2" : (stage < 3 ? "LEVEL 3" : "FINISH")
         };
       }
 
@@ -1328,16 +1419,15 @@
 
   function skyBandsNow() {
     if (stage < 2) return SKY_BANDS;
-    const laps = SKY_CYCLE.length;
-    const u = ((skyCycle / SKY_PERIOD) % 1) * laps;
-    const i0 = Math.floor(u) % laps;
-    const frac = u - Math.floor(u);
-    const s = frac * frac * (3 - 2 * frac);
-    const cycle = mixStops(SKY_CYCLE[i0], SKY_CYCLE[(i0 + 1) % laps], s);
     const t = blendT(position);
-    if (t >= 1) return rasterBands(cycle);
-    if (t <= 0) return SKY_BANDS;
-    return rasterBands(mixStops(SKY_STOPS, cycle, t));
+    if (stage < 3) {
+      if (t >= 1) return rasterBands(SKY_GRAY);
+      if (t <= 0) return SKY_BANDS;
+      return rasterBands(mixStops(SKY_STOPS, SKY_GRAY, t));
+    }
+    if (t >= 1) return rasterBands(SKY_DUSK);
+    if (t <= 0) return rasterBands(SKY_GRAY);
+    return rasterBands(mixStops(SKY_GRAY, SKY_DUSK, t));
   }
 
   function drawSky() {
@@ -1384,7 +1474,6 @@
     const keepWheel = wheel;
     const keepRecover = recover;
     stage = 2;
-    skyCycle = 0;
     grassAge = 0;
     buildCourse(2);
     position = 0;
@@ -1399,9 +1488,28 @@
     playFanfare();
   }
 
+  function enterLevel3() {
+    const keepSpeed = speed;
+    const keepX = playerX;
+    const keepWheel = wheel;
+    const keepRecover = recover;
+    stage = 3;
+    grassAge = 0;
+    buildCourse(3);
+    position = 0;
+    prevPosition = 0;
+    prevPlayerX = keepX;
+    playerX = keepX;
+    speed = keepSpeed;
+    wheel = keepWheel;
+    recover = keepRecover;
+    timeLeft = RACE_SECS;
+    phase = "race";
+    playFanfare();
+  }
+
   function showTitle() {
     stage = 1;
-    skyCycle = 0;
     buildCourse(1);
     resetRun();
     phase = "title";
@@ -1746,7 +1854,6 @@
     last = now;
     if (dt > 0.1) dt = 0.1;
     if (dt < 0) dt = 0;
-    if (stage >= 2) skyCycle += dt;
     acc += dt;
     while (acc >= STEP) {
       update(STEP);
